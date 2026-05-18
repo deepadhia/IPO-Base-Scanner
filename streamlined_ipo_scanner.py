@@ -610,6 +610,7 @@ def get_liquidity_metrics(symbol, df):
     Calculate turnover and detect circuit days from historical data.
     Returns (avg_turnover_cr, circuit_days_15, market_cap_cr)
     """
+    global _yfinance_last_request
     try:
         # 1. Avg Turnover in Crores (Last 20 sessions)
         df_copy = df.copy()
@@ -639,7 +640,6 @@ def get_liquidity_metrics(symbol, df):
                 except Exception as e:
                     logger.debug(f"Could not fetch market cap for {symbol}: {e}")
                 
-                global _yfinance_last_request
                 _yfinance_last_request = time.time()
                 
         return avg_turnover_cr, circuit_days, mcap_cr
