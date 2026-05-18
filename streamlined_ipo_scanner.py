@@ -2015,6 +2015,7 @@ def detect_live_patterns(symbols, listing_map):
                     continue
 
                 # --- Grade Assignment ---
+                score, metrics = compute_grade_hybrid(df, j, w, avgv)
                 grade = assign_grade(score)
                 
                 # --- Institutional Grade Penalty (Phase 2.5) ---
