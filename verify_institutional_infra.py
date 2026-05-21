@@ -88,6 +88,7 @@ def run_test_suite():
             is_complete_snapshot=True,
             incomplete_reasons=[],
             score_components={},
+            scanner="TEST",
             scanner_version="TEST"
         )
         

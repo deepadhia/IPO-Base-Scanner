@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 MONGO_URI = os.getenv("MONGO_URI", "")
-client = MongoClient(MONGO_URI) if MONGO_URI else None
+client = MongoClient(MONGO_URI, tz_aware=True) if MONGO_URI else None
 db = client["ipo_scanner_v2"] if client else None
 
 signals_col = db["signals"] if db is not None else None
@@ -34,7 +34,7 @@ db_metrics = {
 }
 
 # Versioning and Safeguards
-SCANNER_VERSION = "2.4.1"
+SCANNER_VERSION = "2.5.0"
 MAX_DAILY_REJECTIONS = 500
 _rejection_guard_warned = False
 
@@ -421,6 +421,12 @@ def get_all_positions_df(status: str = None):
             
         sig_docs = list(signals_col.find(sig_query, {"_id": 0}))
         
+        # Tag sources to prioritize positions_col records during deduplication
+        for d in pos_docs:
+            d["_doc_source"] = "position"
+        for d in sig_docs:
+            d["_doc_source"] = "signal"
+
         # Combine them
         docs = pos_docs + sig_docs
         
@@ -436,6 +442,13 @@ def get_all_positions_df(status: str = None):
             else:
                 df["status"] = df["status"].fillna(df["lifecycle_state"])
             df["status"] = df["status"].apply(lambda x: "ACTIVE" if x == "POSITION_ACTIVE" else x)
+        
+        # Deduplicate combined rows by symbol, prioritizing positions collection record
+        if not df.empty and "symbol" in df.columns and "_doc_source" in df.columns:
+            df["_source_order"] = df["_doc_source"].map({"position": 0, "signal": 1}).fillna(2)
+            df = df.sort_values(["symbol", "_source_order"])
+            df = df.drop_duplicates(subset=["symbol"], keep="first")
+            df = df.drop(columns=["_doc_source", "_source_order"], errors="ignore")
         
         if "signal_date" in df.columns:
             if "entry_date" not in df.columns:
@@ -513,6 +526,7 @@ def close_signal_in_db(symbol: str, exit_price: float, pnl_pct: float, days_held
             {"symbol": symbol, "status": "ACTIVE"},
             {"$set": {
                 "status": "CLOSED",
+                "lifecycle_state": "CLOSED",
                 "exit_date": datetime.now(timezone.utc),
                 "exit_price": float(exit_price),
                 "pnl_pct": float(pnl_pct),
@@ -527,6 +541,7 @@ def close_signal_in_db(symbol: str, exit_price: float, pnl_pct: float, days_held
                 {"symbol": symbol, "status": "ACTIVE"},
                 {"$set": {
                     "status": "CLOSED",
+                    "lifecycle_state": "CLOSED",
                     "exit_date": datetime.now(timezone.utc),
                     "exit_price": float(exit_price),
                     "pnl_pct": float(pnl_pct),

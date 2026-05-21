@@ -209,13 +209,27 @@ def get_market_regime(target_date=None):
         start_dt = target_date - timedelta(days=150)
         end_dt = target_date + timedelta(days=1)
         
-        # Use yfinance with auto_adjust=False to avoid FutureWarnings
-        df_nifty = yf.download("^NSEI", start=start_dt, end=end_dt, progress=False, auto_adjust=False)
+        try:
+            from utils import fetch_nifty_from_upstox
+            # Convert target_date to datetime to match fetch_nifty_from_upstox requirements
+            start_dt_dt = datetime.combine(start_dt, datetime.min.time())
+            end_dt_dt = datetime.combine(end_dt, datetime.min.time())
+            df_nifty = fetch_nifty_from_upstox(start_dt_dt, end_dt_dt)
+        except Exception as ex:
+            logger.warning(f"Could not fetch Nifty from Upstox in scanner: {ex}")
+            df_nifty = None
+            
+        if df_nifty is None or df_nifty.empty:
+            logger.warning("Upstox fetching for Nifty in scanner failed or returned no data, falling back to yfinance...")
+            # Use yfinance with auto_adjust=False to avoid FutureWarnings
+            df_nifty = yf.download("^NSEI", start=start_dt, end=end_dt, progress=False, auto_adjust=False)
+            
         if df_nifty is None or df_nifty.empty:
             return "UNKNOWN"
             
         # Reset index if MultiIndex columns exist
         df_nifty.columns = [c[0] if isinstance(c, tuple) else c for c in df_nifty.columns]
+        df_nifty.columns = [str(c).capitalize() for c in df_nifty.columns]
         
         # Calculate EMAs
         df_nifty['EMA20'] = df_nifty['Close'].ewm(span=20, adjust=False).mean()
@@ -3437,6 +3451,20 @@ def stop_loss_update_scan():
                 exit_msg = format_exit_alert(sym, exit_reason, current_price, pnl, days_held, entry_price)
                 exit_msg += f"\n\n📊 <b>Outcome:</b> {outcome_type} (Peak: +{new_max_runup:.1f}%)"
                 send_telegram(exit_msg)
+
+                # Persist closed position to DB (Critical Fix: was missing)
+                try:
+                    updated_pos = df_positions.loc[idx].to_dict()
+                    clean_pos = {}
+                    for k, v in updated_pos.items():
+                        try:
+                            if pd.isna(v): continue
+                        except:
+                            pass
+                        clean_pos[k] = v
+                    upsert_position(clean_pos)
+                except Exception as db_e:
+                    logger.error(f"Failed to persist position exit for {sym}: {db_e}")
             else:
                 # Update position and (optionally) trail stop-loss
                 # Default: no change in trailing stop

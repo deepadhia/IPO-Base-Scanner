@@ -332,6 +332,7 @@ Primary workflows:
 - `ipo-scanner-v2.yml` — consolidation scanner (`scan`, `stop_loss_update`, weekly/monthly summaries)
 - `listing-day-breakout.yml` — listing-day breakout scanner
 - `watchlist-hourly-scanner.yml` — hourly watchlist breakout scanner
+- `master-audit-and-verification.yml` — daily system integrity audit and verification suite
 
 Automated schedules (IST):
 | Job | Time | Cron (UTC) |
@@ -339,6 +340,7 @@ Automated schedules (IST):
 | Daily scan + stop-loss update | 2:15 PM weekdays | `45 08 * * 1-5` |
 | Weekly summary | Sunday 2:45 PM | `15 09 * * 0` |
 | Monthly review | 1st of month 2:45 PM | `15 09 1 * *` |
+| Daily system integrity audit & verifications | Daily at 11:00 PM | `30 17 * * *` |
 
 > **NSE Holiday Guard**: The scanner automatically skips NSE public holidays (full 2025–2026 calendar enforced in code). A Telegram notification is sent when a day is skipped.
 

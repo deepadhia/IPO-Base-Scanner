@@ -22,9 +22,15 @@ class SignalBuilder:
         """
         Takes raw data and builds the full Signal snapshot.
         """
-        # 1. Enrichment (Breakout character, Base quality, Market regime)
-        # Use explicit reference_date if provided (for backfills), otherwise use candle date
-        ref_dt = reference_date or (pd.to_datetime(candle['DATE']).to_pydatetime() if hasattr(candle['DATE'], 'to_pydatetime') else candle['DATE'])
+        ref_dt = reference_date
+        if not ref_dt:
+            dt_val = candle['DATE']
+            if isinstance(dt_val, str):
+                ref_dt = pd.to_datetime(dt_val).to_pydatetime()
+            elif hasattr(dt_val, 'to_pydatetime'):
+                ref_dt = dt_val.to_pydatetime()
+            else:
+                ref_dt = dt_val
         enriched = self.enricher.enrich_signal(candle, history, base_candles, reference_date=ref_dt)
         
         # 2. Determine deterministic ID (symbol_date_setup_hash)

@@ -1,0 +1,101 @@
+name: Daily System Integrity Audit & Verification
+
+on:
+  schedule:
+    - cron: '30 17 * * *'   # Daily at 11:00 PM IST (5:30 PM UTC)
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to use'
+        required: false
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+          - development
+
+jobs:
+  run-integrity-audit:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'production' }}
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      
+      - name: Install Python dependencies
+        run: |
+          set -e
+          retry() {
+            local attempts="$1"
+            shift
+            local n=1
+            until "$@"; do
+              if [ "$n" -ge "$attempts" ]; then
+                echo "❌ Command failed after $attempts attempts: $*"
+                return 1
+              fi
+              local wait=$((n * 5))
+              echo "⚠️ Attempt $n failed. Retrying in ${wait}s: $*"
+              sleep "$wait"
+              n=$((n + 1))
+            done
+          }
+          python -m pip install --upgrade pip
+          echo "📦 Installing beautifulsoup4==4.9.3 first..."
+          retry 4 pip install --retries 10 --timeout 120 beautifulsoup4==4.9.3
+          echo "📦 Installing main dependencies..."
+          retry 4 pip install --retries 10 --timeout 120 -r requirements.txt
+          echo "📦 Installing jugaad-data..."
+          retry 4 pip install --retries 10 --timeout 120 "jugaad-data>=0.27,<0.28"
+          echo "✅ Dependencies installed successfully"
+      
+      - name: Check MongoDB Connection
+        env:
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+        run: |
+          if [ -n "$MONGO_URI" ]; then
+            echo " Verifying MongoDB Atlas connection..."
+            python test_db_connection.py
+          else
+            echo "❌ ERROR: MONGO_URI is missing!"
+            exit 1
+          fi
+      
+      - name: Run Verification Suites
+        env:
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+          UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          echo "🧪 Running Scanner Logic Verification..."
+          python verify_scanner_logic.py
+          
+          echo "🧪 Running Institutional Infrastructure Verification..."
+          python verify_institutional_infra.py
+          
+      - name: Run Master System Audit
+        env:
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+          UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          echo "🔍 Running Master System Audit..."
+          # master_audit.py exits with 1 for warnings (e.g. delisted/missing historical data).
+          # We capture the output and only fail the CI if critical '[FAIL]' status is reported.
+          python master_audit.py > audit_output.log 2>&1 || true
+          cat audit_output.log
+          
+          if grep -q "\[FAIL\]" audit_output.log; then
+            echo "❌ Critical audit failures detected in the database or price checks!"
+            exit 2
+          fi
+          
+          echo "✅ Daily System Integrity Audit completed successfully (any warnings are logged above)."

@@ -37,7 +37,9 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 # Keep this in sync with streamlined_ipo_scanner.py SCANNER_VERSION.
 # Section 3 will flag any drift automatically.
-EXPECTED_VERSION = "2.4.1"
+EXPECTED_VERSION = "2.5.0"
+
+IST = timezone(timedelta(hours=5, minutes=30))
 
 NSE_HOLIDAYS_2025_2026 = {
     "2025-01-26", "2025-03-14", "2025-04-14", "2025-04-18",
@@ -63,7 +65,7 @@ def get_db():
     uri = os.getenv("MONGO_URI")
     if not uri:
         raise RuntimeError("MONGO_URI not set in environment.")
-    return MongoClient(uri)["ipo_scanner_v2"]
+    return MongoClient(uri, tz_aware=True)["ipo_scanner_v2"]
 
 
 # ---------------------------------------------------------------------------
@@ -426,13 +428,218 @@ def audit_strategy_consistency(db):
     return r
 
 
+# ===========================================================================
+# SECTION 4: PRICE EXISTENCE & MARKET INTEGRITY
+# ===========================================================================
+def audit_price_existence(db):
+    r = AuditResult()
+    
+    # 1. Fetch trade signals (ACTIVE or CLOSED)
+    signals = list(db.signals.find({"status": {"$in": ["ACTIVE", "CLOSED"]}}))
+    r.ok(f"Found {len(signals)} total trade signals in database.")
+    
+    # 2. Filter out already PASSED signals
+    to_audit = [s for s in signals if s.get("price_audit_status") != "PASSED"]
+    r.ok(f"Skipping {len(signals) - len(to_audit)} already PASSED signals. {len(to_audit)} signals need auditing.")
+    
+    if not to_audit:
+        r.ok("All signals have already passed the price existence audit.")
+        return r
+
+    # Cache map for instrument keys mapping (Upstox)
+    try:
+        from db import get_instrument_key_mapping
+        instrument_mapping = get_instrument_key_mapping()
+    except Exception as e:
+        instrument_mapping = {}
+        r.warn(f"Could not load Upstox instrument mapping: {e}")
+
+    import pandas as pd
+    import yfinance as yf
+    from utils import fetch_from_upstox
+    import warnings
+    warnings.filterwarnings("ignore", category=FutureWarning)
+
+    success_count = 0
+    fail_count = 0
+    skip_count = 0
+
+    for s in to_audit:
+        symbol = s["symbol"]
+        sig_id = s.get("signal_id", "unknown")
+        entry_price = s.get("entry_price")
+        
+        if entry_price is None or entry_price <= 0:
+            r.warn(f"Signal {sig_id}: Invalid or missing entry_price: {entry_price}")
+            continue
+
+        # Determine signal date and created date
+        sig_date_raw = s.get("signal_date")
+        created_raw = s.get("created_at")
+        
+        # Helper to convert to date
+        def to_date_obj(dt_raw):
+            if not dt_raw:
+                return None
+            if isinstance(dt_raw, str):
+                try:
+                    return pd.to_datetime(dt_raw).date()
+                except Exception:
+                    return None
+            elif isinstance(dt_raw, datetime):
+                if dt_raw.tzinfo is None:
+                    dt_raw = dt_raw.replace(tzinfo=timezone.utc)
+                return dt_raw.astimezone(IST).date()
+            return dt_raw
+
+        sig_date = to_date_obj(sig_date_raw) or to_date_obj(created_raw)
+        created_date = to_date_obj(created_raw) or sig_date
+        
+        if not sig_date:
+            r.error(f"Signal {sig_id}: Missing signal_date and created_at fields.")
+            continue
+
+        # Set a window around both dates to handle timezone/weekend offsets
+        min_date = min(sig_date, created_date)
+        max_date = max(sig_date, created_date)
+        start_date = datetime.combine(min_date - timedelta(days=3), datetime.min.time())
+        end_date = datetime.combine(max_date + timedelta(days=3), datetime.max.time())
+        
+        df = None
+        source = None
+        
+        # Try Upstox if token and mapping are available
+        upstox_token = os.getenv("UPSTOX_ACCESS_TOKEN")
+        if upstox_token and instrument_mapping and symbol in instrument_mapping:
+            try:
+                df = fetch_from_upstox(symbol, start_date, end_date)
+                if df is not None and not df.empty:
+                    source = "Upstox"
+            except Exception as e:
+                pass
+                
+        # Fallback to YFinance
+        if df is None or df.empty:
+            try:
+                ticker = f"{symbol}.NS"
+                end_dt_yf = end_date + timedelta(days=1)
+                yf_df = yf.download(ticker, start=start_date.strftime("%Y-%m-%d"), end=end_dt_yf.strftime("%Y-%m-%d"), progress=False, auto_adjust=True)
+                if not yf_df.empty:
+                    yf_df = yf_df.reset_index()
+                    yf_df.columns = [c[0] if isinstance(c, tuple) else c for c in yf_df.columns]
+                    yf_df.rename(columns={"Date": "DATE", "Open": "OPEN", "High": "HIGH", "Low": "LOW", "Close": "CLOSE", "Volume": "VOLUME"}, inplace=True)
+                    yf_df["DATE"] = pd.to_datetime(yf_df["DATE"]).dt.date
+                    df = yf_df
+                    source = "YFinance"
+            except Exception as e:
+                pass
+
+        if df is None or df.empty:
+            r.warn(f"Signal {sig_id}: Could not fetch historical data from Upstox or YFinance for {symbol}")
+            db.signals.update_one(
+                {"signal_id": sig_id},
+                {"$set": {
+                    "price_audit_status": "SKIPPED",
+                    "price_audit_error": "Could not fetch historical data"
+                }}
+            )
+            skip_count += 1
+            continue
+
+        # Look for matching EOD candle
+        # Convert df DATE column to date objects if not already
+        df["DATE_ONLY"] = pd.to_datetime(df["DATE"]).dt.date
+        
+        price_valid = False
+        candle_date = None
+        low = 0.0
+        high = 0.0
+        
+        # 1. Try to check price validity on signal breakout date (sig_date)
+        matching_rows = df[df["DATE_ONLY"] == sig_date]
+        if not matching_rows.empty:
+            candle = matching_rows.iloc[0]
+            candle_date = candle["DATE_ONLY"]
+            low = float(candle["LOW"])
+            high = float(candle["HIGH"])
+            price_valid = (low * 0.995) <= entry_price <= (high * 1.005)
+            
+        # 2. If not valid on sig_date, try checking on position execution date (created_date)
+        if not price_valid and created_date != sig_date:
+            created_rows = df[df["DATE_ONLY"] == created_date]
+            if not created_rows.empty:
+                candle = created_rows.iloc[0]
+                candle_date = candle["DATE_ONLY"]
+                low = float(candle["LOW"])
+                high = float(candle["HIGH"])
+                price_valid = (low * 0.995) <= entry_price <= (high * 1.005)
+                
+        # 3. Fallback to closest date within 2 days of sig_date if no exact match or valid candle found
+        if not price_valid and matching_rows.empty:
+            df["day_diff"] = df["DATE_ONLY"].apply(lambda x: abs((x - sig_date).days))
+            closest_rows = df[df["day_diff"] <= 2].sort_values("day_diff")
+            if not closest_rows.empty:
+                candle = closest_rows.iloc[0]
+                candle_date = candle["DATE_ONLY"]
+                low = float(candle["LOW"])
+                high = float(candle["HIGH"])
+                price_valid = (low * 0.995) <= entry_price <= (high * 1.005)
+                
+        if not candle_date:
+            r.warn(f"Signal {sig_id}: No trading candle found within 2 days of {sig_date} for {symbol}")
+            db.signals.update_one(
+                {"signal_id": sig_id},
+                {"$set": {
+                    "price_audit_status": "SKIPPED",
+                    "price_audit_error": f"No candle found near {sig_date}"
+                }}
+            )
+            skip_count += 1
+            continue
+        
+        if price_valid:
+            db.signals.update_one(
+                {"signal_id": sig_id},
+                {"$set": {
+                    "price_audit_status": "PASSED",
+                    "price_audit_source": source,
+                    "price_audit_candle_date": datetime.combine(candle_date, datetime.min.time()),
+                    "price_audit_range": f"Rs.{low:.2f} - Rs.{high:.2f}"
+                }}
+            )
+            success_count += 1
+        else:
+            if entry_price < low:
+                pct_diff = (low - entry_price) / low * 100
+                err_msg = f"Entry price Rs.{entry_price:.2f} is BELOW candle Low Rs.{low:.2f} by {pct_diff:.2f}%"
+            else:
+                pct_diff = (entry_price - high) / high * 100
+                err_msg = f"Entry price Rs.{entry_price:.2f} is ABOVE candle High Rs.{high:.2f} by {pct_diff:.2f}%"
+                
+            r.error(f"Signal {sig_id} ({symbol}): {err_msg} on {candle_date} (Source: {source})")
+            db.signals.update_one(
+                {"signal_id": sig_id},
+                {"$set": {
+                    "price_audit_status": "FAILED",
+                    "price_audit_error": err_msg,
+                    "price_audit_source": source,
+                    "price_audit_candle_date": datetime.combine(candle_date, datetime.min.time()),
+                    "price_audit_range": f"Rs.{low:.2f} - Rs.{high:.2f}"
+                }}
+            )
+            fail_count += 1
+            
+    r.ok(f"Audit completed: {success_count} passed, {fail_count} failed, {skip_count} skipped.")
+    return r
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(description="IPO-Base-Scanner master audit")
     parser.add_argument("--json",    action="store_true", help="Output as JSON")
-    parser.add_argument("--section", type=int, choices=[1, 2, 3],
+    parser.add_argument("--section", type=int, choices=[1, 2, 3, 4],
                         help="Run only one section")
     args = parser.parse_args()
 
@@ -452,9 +659,10 @@ def main():
         1: ("Section 1: Database Integrity",      lambda: audit_database_integrity(db)),
         2: ("Section 2: Telemetry / Log Quality", lambda: audit_log_quality(db)),
         3: ("Section 3: Strategy Consistency",    lambda: audit_strategy_consistency(db)),
+        4: ("Section 4: Price Existence & Market Integrity", lambda: audit_price_existence(db)),
     }
 
-    run_nums = [args.section] if args.section else [1, 2, 3]
+    run_nums = [args.section] if args.section else [1, 2, 3, 4]
 
     results   = {}
     worst_ext = 0

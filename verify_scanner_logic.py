@@ -53,24 +53,22 @@ try:
     fn = getattr(mod, 'write_daily_log', None)
     if fn:
         print("   ✅ write_daily_log() available")
-        # Test it creates a file
-        fn("verify_test", "TEST", "VERIFICATION", {"test": True})
-        from datetime import datetime, timezone, timedelta
-        ist = timezone(timedelta(hours=5, minutes=30))
-        today = datetime.now(ist).strftime("%Y-%m-%d")
-        log_path = os.path.join("logs", today, "verify_test.jsonl")
-        if os.path.exists(log_path):
-            print(f"   ✅ Daily log file created: {log_path}")
-            # Clean up
-            os.remove(log_path)
-            try:
-                os.rmdir(os.path.join("logs", today))
-                os.rmdir("logs")
-            except:
-                pass
+        # Test it writes to MongoDB
+        fn("verify_test", "TEST_SYMBOL", "VERIFICATION", {"test": True})
+        from db import logs_col
+        if logs_col is not None:
+            # Query for the test log
+            test_log = logs_col.find_one({"scanner": "verify_test", "symbol": "TEST_SYMBOL"})
+            if test_log:
+                print("   ✅ Daily log successfully written to MongoDB")
+                # Clean up
+                logs_col.delete_one({"_id": test_log["_id"]})
+            else:
+                warnings.append("write_daily_log did not write to MongoDB")
+                print("   ⚠️  Log not found in MongoDB")
         else:
-            warnings.append("write_daily_log did not create file")
-            print(f"   ⚠️  Log file not created (may be path issue)")
+            warnings.append("MongoDB logs collection not connected")
+            print("   ⚠️  MongoDB not connected")
     else:
         errors.append("write_daily_log not found")
         print("   ❌ write_daily_log not found")
@@ -135,7 +133,7 @@ try:
         content = f.read()
     
     # Check for CLOSE-based breakout check and bullish candle check
-    has_close_check = 'df["CLOSE"].iat[j] > max(high2' in content
+    has_close_check = 'df["CLOSE"].iat[j] > high2' in content
     has_bullish_check = 'df["CLOSE"].iat[j] > df["OPEN"].iat[j]' in content
     
     if has_close_check:

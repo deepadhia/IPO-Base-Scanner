@@ -114,3 +114,53 @@ def fetch_from_upstox(symbol, start_date, end_date):
         logger.warning(f"⚠️ Upstox API error for {symbol}: {e}")
         return None
 
+def fetch_nifty_from_upstox(start_date, end_date):
+    """Fetch Nifty 50 index data from Upstox API."""
+    import requests
+    access_token = os.getenv('UPSTOX_ACCESS_TOKEN')
+    if not access_token:
+        logger.warning("Upstox access token not found for Nifty fetching")
+        return None
+    
+    headers = {
+        'Accept': 'application/json',
+        'Api-Version': '2.0',
+        'Authorization': f'Bearer {access_token}'
+    }
+    
+    from_str = start_date.strftime('%Y-%m-%d')
+    to_str = end_date.strftime('%Y-%m-%d')
+    url = f"https://api.upstox.com/v2/historical-candle/NSE_INDEX|Nifty 50/day/{to_str}/{from_str}"
+    
+    try:
+        logger.info("🔄 Trying Upstox API for Nifty 50 index")
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            data = response.json()
+            if 'data' in data and 'candles' in data['data']:
+                candles = data['data']['candles']
+                if candles:
+                    df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close'])
+                    
+                    try:
+                        df['DATE'] = pd.to_datetime(df['timestamp'])
+                    except Exception:
+                        df['DATE'] = pd.to_datetime(df['timestamp'], format='%Y-%m-%d')
+                    
+                    df.columns = ['timestamp', 'OPEN', 'HIGH', 'LOW', 'CLOSE', 'VOLUME', 'IGNORE', 'DATE']
+                    df = df[['DATE', 'OPEN', 'HIGH', 'LOW', 'CLOSE', 'VOLUME']]
+                    df['LTP'] = df['CLOSE']
+                    
+                    # Ensure DATE is timezone naive to match yfinance output style
+                    df['DATE'] = pd.to_datetime(df['DATE']).dt.tz_localize(None)
+                    df = df.sort_values('DATE').reset_index(drop=True)
+                    df.set_index('DATE', inplace=True)
+                    logger.info(f"✅ Upstox API: Got {len(df)} Nifty 50 candles")
+                    return df
+        else:
+            logger.warning(f"Upstox Nifty index query failed with status code {response.status_code}")
+    except Exception as e:
+        logger.warning(f"⚠️ Upstox API error for Nifty: {e}")
+    return None
+
+
