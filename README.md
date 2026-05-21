@@ -230,6 +230,7 @@ Added in **v2.5.0** — a standalone daily/weekly audit with three sections:
 | **1: DB Integrity** | Orphan signals, inverted stops/targets, zero entry prices, duplicate signal IDs, unrealistic PnL |
 | **2: Log Quality** | SCAN_COMPLETED heartbeats, rejection ratios, version drift in logs, DAILY_SNAPSHOT coverage |
 | **3: Strategy Consistency** | Version alignment across all files, sector population, entry-vs-breakout guard, enrichment completeness |
+| **4: Price Existence** | Validates entry price against historical candle data (supports next-day execution) |
 
 ```bash
 python master_audit.py             # Full audit
@@ -241,6 +242,44 @@ Exit codes: `0` = PASS · `1` = WARN · `2` = FAIL
 
 > The audit is aware of all three signal statuses (`ACTIVE`, `CLOSED`, `WATCH`) and excludes watchlist
 > candidates from checks that only apply to executed trade signals.
+
+### 🏆 Winner Trait Classification (`winner_label` field)
+
+Added in **v2.5.0** — every new consolidation breakout signal is automatically tagged with a `winner_label` derived from empirical DB analysis (marked as experimental due to small sample size):
+
+| Label | Criteria met | Meaning |
+|---|---|---|
+| `POSSIBLE_WINNER_EXPERIMENTAL` | 4–5 out of 5 | Matches the fingerprint of top-performing setups (experimental - verify manually) |
+| `STANDARD` | 2–3 out of 5 | Meets minimum bar, trade with normal sizing |
+| `WATCHLIST_ONLY` | 0–1 out of 5 | Weak setup — paper trade only |
+
+**The 5 winner criteria** (derived from 2026-05-21 DB analysis):
+1. Grade B or better
+2. Consolidation window 10 or 20 days
+3. Volume ratio ≥ 1.5x at breakout
+4. Tight base (consolidation range < 18%)
+5. Nifty trend slope > 0 (bullish regime at signal time)
+
+The label appears in the MongoDB `signals` document and is highlighted in the Telegram alert:
+```
+🎯 CONSOLIDATION BREAKOUT SIGNAL
+🏆 POSSIBLE WINNER (experimental — based on thin sample, verify manually) — Matches 5/5 winner criteria
+   ✅ grade_B_or_better, window_10_or_20, volume_ratio_gte_1_5, tight_base_lt_18pct, nifty_bullish_slope
+```
+
+### 📊 Biweekly DB Quality & Winner Pattern Analysis (`analyze_db_quality_and_patterns.py`)
+
+Runs every 1st and 15th of the month via GitHub Actions. Generates a report covering:
+- Field coverage and data completeness across all collections
+- Closed-trade performance: win rate, avg win/loss, reward:risk, expectancy
+- Grade performance breakdown (A+/B/C)
+- Market context at signal time (Nifty regime, slope distribution)
+- Scan window performance (10/20/40/80 day comparison)
+- Active positions risk snapshot (% to stop-loss)
+
+```bash
+python analyze_db_quality_and_patterns.py  # Run locally at any time
+```
 
 ---
 
@@ -333,6 +372,7 @@ Primary workflows:
 - `listing-day-breakout.yml` — listing-day breakout scanner
 - `watchlist-hourly-scanner.yml` — hourly watchlist breakout scanner
 - `master-audit-and-verification.yml` — daily system integrity audit and verification suite
+- `biweekly-db-quality-analysis.yml` — biweekly DB quality & winner pattern analysis report
 
 Automated schedules (IST):
 | Job | Time | Cron (UTC) |
@@ -341,6 +381,7 @@ Automated schedules (IST):
 | Weekly summary | Sunday 2:45 PM | `15 09 * * 0` |
 | Monthly review | 1st of month 2:45 PM | `15 09 1 * *` |
 | Daily system integrity audit & verifications | Daily at 11:00 PM | `30 17 * * *` |
+| Biweekly DB quality & winner pattern analysis | 1st & 15th at 8:00 PM | `30 14 1,15 * *` |
 
 > **NSE Holiday Guard**: The scanner automatically skips NSE public holidays (full 2025–2026 calendar enforced in code). A Telegram notification is sent when a day is skipped.
 

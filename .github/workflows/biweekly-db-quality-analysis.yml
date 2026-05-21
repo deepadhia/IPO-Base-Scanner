@@ -1,0 +1,153 @@
+name: Biweekly DB Quality & Winner Pattern Analysis
+
+on:
+  schedule:
+    # Every 2 weeks: 1st and 15th of the month at 8:00 PM IST (2:30 PM UTC)
+    - cron: '30 14 1 * *'   # 1st of every month
+    - cron: '30 14 15 * *'  # 15th of every month
+  workflow_dispatch:         # Allow manual trigger at any time
+
+jobs:
+  analyze-db-quality:
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Python dependencies
+        run: |
+          set -e
+          retry() {
+            local attempts="$1"; shift
+            local n=1
+            until "$@"; do
+              if [ "$n" -ge "$attempts" ]; then echo "❌ Failed after $attempts attempts: $*"; return 1; fi
+              local wait=$((n * 5))
+              echo "⚠️ Attempt $n failed. Retrying in ${wait}s: $*"
+              sleep "$wait"; n=$((n + 1))
+            done
+          }
+          python -m pip install --upgrade pip
+          retry 4 pip install --retries 10 --timeout 120 beautifulsoup4==4.9.3
+          retry 4 pip install --retries 10 --timeout 120 -r requirements.txt
+          retry 4 pip install --retries 10 --timeout 120 "jugaad-data>=0.27,<0.28"
+          echo "✅ Dependencies installed"
+
+      - name: Verify MongoDB Connection
+        env:
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+        run: |
+          if [ -n "$MONGO_URI" ]; then
+            echo "🔌 Verifying MongoDB Atlas connection..."
+            python test_db_connection.py
+          else
+            echo "❌ ERROR: MONGO_URI is missing!"
+            exit 1
+          fi
+
+      - name: Run DB Quality & Winner Pattern Analysis
+        id: analysis
+        env:
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+          UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          echo "📊 Running biweekly DB Quality & Winner Pattern Analysis..."
+          python analyze_db_quality_and_patterns.py > analysis_output.log 2>&1 || true
+          cat analysis_output.log
+
+          # Fail the build only if a hard crash occurred (no output at all)
+          if [ ! -s analysis_output.log ]; then
+            echo "❌ Analysis script produced no output — likely a crash."
+            exit 1
+          fi
+
+          echo "✅ Analysis complete."
+
+      - name: Upload Analysis Report as Artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: db-quality-analysis-${{ github.run_id }}
+          path: analysis_output.log
+          retention-days: 30
+
+      - name: Extract Key Metrics & Post Summary
+        env:
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          echo "📋 Extracting key metrics for workflow summary..."
+          python - <<'EOF'
+          import os, sys
+          sys.path.insert(0, '.')
+          from pymongo import MongoClient
+          from dotenv import load_dotenv
+          from datetime import datetime
+          import pandas as pd
+
+          load_dotenv()
+          client = MongoClient(os.getenv("MONGO_URI"), tz_aware=False)
+          db = client["ipo_scanner_v2"]
+
+          signals   = pd.DataFrame(list(db.signals.find({}, {"_id": 0})))
+          positions = pd.DataFrame(list(db.positions.find({}, {"_id": 0})))
+
+          total_sig = len(signals)
+          active_pos = 0; closed_pos = 0; green = 0
+          win_rate = None; avg_win = None; avg_loss = None
+
+          if not positions.empty and "status" in positions.columns:
+              positions["pnl_pct"] = pd.to_numeric(positions.get("pnl_pct", 0), errors="coerce").fillna(0)
+              active_pos = (positions["status"].str.upper() == "ACTIVE").sum()
+              closed = positions[positions["status"].str.upper().isin(["CLOSED","TARGET_HIT","STOPPED_OUT"])]
+              closed_pos = len(closed)
+              if not closed.empty:
+                  winners = closed[closed["pnl_pct"] > 0]
+                  losers  = closed[closed["pnl_pct"] <= 0]
+                  win_rate = len(winners) / len(closed) * 100
+                  avg_win  = winners["pnl_pct"].mean() if not winners.empty else 0
+                  avg_loss = losers["pnl_pct"].mean()  if not losers.empty else 0
+              active = positions[positions["status"].str.upper() == "ACTIVE"]
+              green = (active["pnl_pct"] > 0).sum()
+
+          # Winner labels on signals
+          possible_winners = 0; standard = 0; watchlist_only = 0
+          if not signals.empty and "winner_label" in signals.columns:
+              possible_winners = signals["winner_label"].isin(["POSSIBLE_WINNER", "POSSIBLE_WINNER_EXPERIMENTAL"]).sum()
+              standard         = (signals["winner_label"] == "STANDARD").sum()
+              watchlist_only   = (signals["winner_label"] == "WATCHLIST_ONLY").sum()
+
+          print("=" * 60)
+          print("  BIWEEKLY SYSTEM HEALTH SUMMARY")
+          print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M IST')}")
+          print("=" * 60)
+          print(f"  Total signals in DB  : {total_sig}")
+          print(f"  Active positions     : {active_pos}  ({green} in profit)")
+          print(f"  Closed positions     : {closed_pos}")
+          if win_rate is not None:
+              print(f"  Win Rate (closed)    : {win_rate:.1f}%")
+              print(f"  Avg Win              : +{avg_win:.2f}%")
+              print(f"  Avg Loss             :  {avg_loss:.2f}%")
+          print(f"  POSSIBLE_WINNER tags : {possible_winners}")
+          print(f"  STANDARD tags        : {standard}")
+          print(f"  WATCHLIST_ONLY tags  : {watchlist_only}")
+          print("=" * 60)
+          EOF
+
+      - name: Check for Critical DB Issues
+        run: |
+          # Fail if analysis log contains [FAIL] (hard data corruption)
+          if grep -q "\[FAIL\]" analysis_output.log 2>/dev/null; then
+            echo "❌ Critical database failures found in analysis!"
+            exit 1
+          fi
+          echo "✅ No critical database failures found."

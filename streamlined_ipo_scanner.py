@@ -180,6 +180,80 @@ def classify_pattern_type(grade: str, days_since_listing: int, vol_ratio: float,
 # Global cache for Nifty data to avoid redundant API calls
 _nifty_regime_cache = {}
 
+# ---------------------------------------------------------------------------
+# Winner Trait Classifier
+# Derived from DB quality analysis (2026-05-21):
+#   • Grade B+ outperforms C by +7% avg PnL
+#   • Windows 10 & 20 avg +3.85% / +3.38%; window 40 avg -17.93%
+#   • 72% of signals fired in Nifty downtrend (slope<0) → most losses
+#   • Tight base (<18%) + high volume (>1.5x) = institutional fingerprint
+# ---------------------------------------------------------------------------
+def classify_winner_traits(
+    grade: str,
+    consolidation_window: int,
+    volume_ratio: float,
+    consolidation_range_pct: float,
+    nifty_slope: float = None,
+) -> dict:
+    """
+    Score a new signal against known winner-pattern criteria.
+    Returns a dict with:
+      winner_label      : 'POSSIBLE_WINNER_EXPERIMENTAL' | 'STANDARD' | 'WATCHLIST_ONLY'
+      winner_score      : 0-5 integer (one point per criterion met)
+      winner_criteria   : list of criteria that were met
+      winner_flags      : list of criteria that FAILED (for transparency)
+    """
+    criteria_met  = []
+    criteria_fail = []
+
+    # Criterion 1 — Grade must be B or better
+    if grade in ('A+', 'A', 'B'):
+        criteria_met.append('grade_B_or_better')
+    else:
+        criteria_fail.append('grade_below_B')
+
+    # Criterion 2 — Short/medium consolidation window (10 or 20 days)
+    if consolidation_window in (10, 20):
+        criteria_met.append('window_10_or_20')
+    else:
+        criteria_fail.append(f'window_{consolidation_window}_not_preferred')
+
+    # Criterion 3 — Strong volume confirmation (>1.5x avg)
+    if volume_ratio is not None and volume_ratio >= 1.5:
+        criteria_met.append('volume_ratio_gte_1_5')
+    else:
+        criteria_fail.append('volume_ratio_weak')
+
+    # Criterion 4 — Tight base (<18% consolidation range)
+    if consolidation_range_pct is not None and consolidation_range_pct < 18.0:
+        criteria_met.append('tight_base_lt_18pct')
+    else:
+        criteria_fail.append('base_too_wide')
+
+    # Criterion 5 — Bullish Nifty regime (slope > 0, optional field)
+    if nifty_slope is not None:
+        if nifty_slope > 0:
+            criteria_met.append('nifty_bullish_slope')
+        else:
+            criteria_fail.append('nifty_bearish_slope')
+    # If slope is unknown we neither reward nor penalise
+
+    score = len(criteria_met)
+
+    if score >= 4:
+        label = 'POSSIBLE_WINNER_EXPERIMENTAL'
+    elif score >= 2:
+        label = 'STANDARD'
+    else:
+        label = 'WATCHLIST_ONLY'
+
+    return {
+        'winner_label':    label,
+        'winner_score':    score,
+        'winner_criteria': criteria_met,
+        'winner_flags':    criteria_fail,
+    }
+
 def get_market_regime(target_date=None):
     """
     Automated Nifty-based regime detection.
@@ -2381,7 +2455,31 @@ def detect_live_patterns(symbols, listing_map):
                     "base_score": score_components.get("base_score", 0.0),
                     "momentum_score": score_components.get("momentum_score", 0.0),
                 }
-                
+
+                # --- Winner Trait Classification (empirically derived, 2026-05-21) ---
+                _nifty_slope_now = None
+                try:
+                    from enrichment.market import compute_market_context
+                    _mc = compute_market_context(df["DATE"].iat[j])
+                    _nifty_slope_now = _mc.get("nifty_trend_slope")
+                except Exception:
+                    pass
+                _winner_meta = classify_winner_traits(
+                    grade=grade,
+                    consolidation_window=w,
+                    volume_ratio=vol_ratio_val,
+                    consolidation_range_pct=prng,
+                    nifty_slope=_nifty_slope_now,
+                )
+                new_signal['winner_label']    = _winner_meta['winner_label']
+                new_signal['winner_score']    = _winner_meta['winner_score']
+                new_signal['winner_criteria'] = _winner_meta['winner_criteria']
+                new_signal['winner_flags']    = _winner_meta['winner_flags']
+                logger.info(
+                    f"🏷️ [{sym}] Winner label: {_winner_meta['winner_label']} "
+                    f"(score {_winner_meta['winner_score']}/5 — met: {_winner_meta['winner_criteria']})"
+                )
+
                 # Write to daily log
                 metrics["metric_ipo_age"] = sanitize_metric(ipo_age_days) if 'ipo_age_days' in locals() else None
                 write_daily_log("consolidation", sym, "ACCEPTED_BREAKOUT", {**metrics, 
@@ -2570,7 +2668,18 @@ def detect_live_patterns(symbols, listing_map):
                 except:
                     price_source_display = f"📊 {price_source} | Reference: ₹{entry:.2f}"
                 
-                message = f"""🎯 <b>CONSOLIDATION BREAKOUT SIGNAL</b>
+                # Build winner label badge for Telegram
+                _wl = new_signal.get('winner_label', 'STANDARD')
+                _ws = new_signal.get('winner_score', 0)
+                _wc = new_signal.get('winner_criteria', [])
+                if _wl == 'POSSIBLE_WINNER_EXPERIMENTAL':
+                    _winner_badge = f"\n🏆 <b>POSSIBLE WINNER (experimental — based on thin sample, verify manually)</b> — Matches {_ws}/5 winner criteria\n   ✅ {', '.join(_wc)}"
+                elif _wl == 'WATCHLIST_ONLY':
+                    _winner_badge = f"\n⚠️ WATCHLIST ONLY — Only {_ws}/5 winner criteria met"
+                else:
+                    _winner_badge = ""
+
+                message = f"""🎯 <b>CONSOLIDATION BREAKOUT SIGNAL</b>{_winner_badge}
 
 📊 Symbol: <b>{sym}</b>
 📋 Signal Type: <b>Consolidation-Based Breakout</b>
