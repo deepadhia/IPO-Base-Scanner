@@ -16,6 +16,26 @@ import os
 from datetime import datetime, timedelta
 import json
 
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+
+def safe_float(v, default=0.0):
+    import math
+    if v is None or pd.isna(v) or (isinstance(v, float) and math.isnan(v)):
+        return default
+    return float(v)
+
+def safe_int(v, default=0):
+    import math
+    if v is None or pd.isna(v) or (isinstance(v, float) and math.isnan(v)):
+        return default
+    return int(v)
+
+def safe_str(v, default=""):
+    if v is None or pd.isna(v):
+        return default
+    return str(v)
+
 # Import from main scanner
 import importlib.util
 spec = importlib.util.spec_from_file_location("scanner", "streamlined_ipo_scanner.py")
@@ -34,9 +54,7 @@ def analyze_signals():
     print("📊 Analyzing Signals Performance...")
     print("=" * 80)
     
-    if not os.path.exists(SIGNALS_CSV):
-        print("❌ No signals file found!")
-        return None
+
     
     # Load signals from MongoDB
     signals_df = get_all_signals_df()
@@ -96,20 +114,20 @@ def analyze_signals():
         
         signal_analysis = {
             'symbol': symbol,
-            'signal_date': str(signal_date),
-            'signal_type': signal_type,
-            'grade': grade,
-            'status': status,
-            'entry_price': float(entry_price),
-            'stop_loss': float(stop_loss),
-            'target_price': float(target_price),
+            'signal_date': safe_str(signal_date),
+            'signal_type': safe_str(signal_type),
+            'grade': safe_str(grade),
+            'status': safe_str(status),
+            'entry_price': safe_float(entry_price),
+            'stop_loss': safe_float(stop_loss),
+            'target_price': safe_float(target_price),
             'days_since_signal': days_since_signal,
-            'current_price': float(current_price) if current_price else None,
-            'price_source': price_source,
-            'exit_price': float(exit_price) if exit_price else 0,
-            'exit_date': str(exit_date) if exit_date else '',
-            'pnl_pct': float(pnl_pct),
-            'days_held': int(days_held) if days_held else 0,
+            'current_price': safe_float(current_price) if current_price else None,
+            'price_source': safe_str(price_source),
+            'exit_price': safe_float(exit_price),
+            'exit_date': safe_str(exit_date),
+            'pnl_pct': safe_float(pnl_pct),
+            'days_held': safe_int(days_held),
             'issues': []
         }
         
@@ -183,9 +201,7 @@ def analyze_positions():
     print("📊 Analyzing Positions Performance...")
     print("=" * 80)
     
-    if not os.path.exists(POSITIONS_CSV):
-        print("❌ No positions file found!")
-        return None
+
     
     # Load positions from MongoDB
     positions_df = get_all_positions_df()
@@ -244,20 +260,20 @@ def analyze_positions():
         
         position_analysis = {
             'symbol': symbol,
-            'entry_date': str(entry_date),
-            'grade': grade,
-            'status': status,
-            'entry_price': float(entry_price),
-            'stop_loss': float(stop_loss),
-            'trailing_stop': float(trailing_stop),
+            'entry_date': safe_str(entry_date),
+            'grade': safe_str(grade),
+            'status': safe_str(status),
+            'entry_price': safe_float(entry_price),
+            'stop_loss': safe_float(stop_loss),
+            'trailing_stop': safe_float(trailing_stop),
             'days_since_entry': days_since_entry,
-            'stored_current_price': float(current_price),
-            'live_price': float(live_price) if live_price else None,
-            'price_source': price_source,
-            'exit_price': float(exit_price) if exit_price else 0,
-            'exit_date': str(exit_date) if exit_date else '',
-            'pnl_pct': float(pnl_pct),
-            'days_held': int(days_held) if days_held else 0,
+            'stored_current_price': safe_float(current_price),
+            'live_price': safe_float(live_price) if live_price else None,
+            'price_source': safe_str(price_source),
+            'exit_price': safe_float(exit_price),
+            'exit_date': safe_str(exit_date),
+            'pnl_pct': safe_float(pnl_pct),
+            'days_held': safe_int(days_held),
             'issues': []
         }
         

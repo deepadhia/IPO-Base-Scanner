@@ -240,5 +240,6 @@ tmp_*
 combined_logs_for_ai.jsonl
 combined_logs_for_ai.jsonl.summary.json
 monthly_system_report.json
+signals_performance_report.json
 validation_charts/
 *.html

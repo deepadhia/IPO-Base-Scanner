@@ -1666,6 +1666,17 @@ def save_breakout_signal(breakout_data):
             volume_warnings = breakout_data.get('volume_warnings', [])
             volume_note = f"VOLUME_CAUTION: {'; '.join(volume_warnings)}"
         
+        # --- Capital Allocation Gate: Max Active Positions Limit ---
+        try:
+            from db import positions_col
+            active_count = positions_col.count_documents({"status": "ACTIVE"})
+            portfolio_full = active_count >= scanner_module.MAX_ACTIVE_POSITIONS
+        except Exception:
+            portfolio_full = False
+            
+        _mr = get_market_regime(today)
+        size_mult = scanner_module.REGIME_SIZE_MULT.get(_mr, 0.5)
+
         new_signal = {
             "signal_id": signal_id,
             "symbol": breakout_data['symbol'],
@@ -1676,7 +1687,7 @@ def save_breakout_signal(breakout_data):
             "score": 100 if not breakout_data.get('has_volume_caution', False) else 80,
             "stop_loss": breakout_data['stop_loss'],
             "target_price": breakout_data['target_price'],
-            "status": "ACTIVE",
+            "status": "ACTIVE" if not portfolio_full else "PAPER_ONLY",
             "exit_date": "",
             "exit_price": 0,
             "pnl_pct": 0,
@@ -1685,6 +1696,11 @@ def save_breakout_signal(breakout_data):
             "notes": volume_note,
             "version": SCANNER_VERSION,
             "scanner": "listing_day",
+            "position_size_weight": size_mult,
+            "market_regime": _mr,
+            "strategy_version": "2.5.0-listing-day",
+            "execution_version": "2.5.0-single-writer",
+            "risk_model_version": "2.5.0-archetype-velocity",
             "leader_score": int(breakout_data.get("leader_score", 0)),
             # --- Tier fields (additive, backward-compatible) ---
             "tier": breakout_data.get("tier", ""),
@@ -1826,6 +1842,19 @@ def add_position(breakout_data):
     """Add position to MongoDB (DB-only)."""
     try:
         today = datetime.now().date()
+        
+        # --- Capital Allocation Gate: Max Active Positions Limit ---
+        try:
+            from db import positions_col
+            active_count = positions_col.count_documents({"status": "ACTIVE"})
+            portfolio_full = active_count >= scanner_module.MAX_ACTIVE_POSITIONS
+        except Exception:
+            portfolio_full = False
+            
+        if portfolio_full:
+            logger.warning(f"⏭️ Portfolio FULL ({active_count}/{scanner_module.MAX_ACTIVE_POSITIONS}). Skipping live position write for {breakout_data['symbol']}.")
+            return True
+
         try:
             from db import has_active_position
             if has_active_position(breakout_data['symbol']):
@@ -1833,6 +1862,9 @@ def add_position(breakout_data):
                 return False
         except Exception:
             pass
+            
+        _mr = get_market_regime(today)
+        size_mult = scanner_module.REGIME_SIZE_MULT.get(_mr, 0.5)
         
         # Create new position
         new_position = {
@@ -1845,7 +1877,12 @@ def add_position(breakout_data):
             "trailing_stop": breakout_data['stop_loss'],
             "pnl_pct": 0,
             "days_held": 0,
-            "status": "ACTIVE"
+            "status": "ACTIVE",
+            "position_size_weight": size_mult,
+            "market_regime": _mr,
+            "strategy_version": "2.5.0-listing-day",
+            "execution_version": "2.5.0-single-writer",
+            "risk_model_version": "2.5.0-archetype-velocity"
         }
         
         # DB-only write: position
@@ -1949,8 +1986,21 @@ def scan_listing_day_breakouts():
                         # Update listing status
                         update_listing_status(symbol, 'BREAKOUT')
 
+                        try:
+                            from db import positions_col
+                            active_count = positions_col.count_documents({"status": "ACTIVE"})
+                            portfolio_full = active_count >= scanner_module.MAX_ACTIVE_POSITIONS
+                        except Exception:
+                            portfolio_full = False
+                            
+                        _mr = get_market_regime(datetime.today().date())
+                        size_mult = scanner_module.REGIME_SIZE_MULT.get(_mr, 0.5)
+
                         # Send alert
                         alert_msg = format_listing_breakout_alert(breakout)
+                        if portfolio_full:
+                            alert_msg = "⚠️ <b>[PORTFOLIO FULL - PAPER ONLY]</b>\n" + alert_msg
+                        alert_msg += f"\n\n⚖️ <b>Regime Size Weight:</b> {size_mult:.2f}x ({_mr})"
                         send_telegram(alert_msg)
 
                         breakouts_found += 1
@@ -1962,7 +2012,21 @@ def scan_listing_day_breakouts():
                     if save_breakout_signal(breakout):
                         add_position(breakout)
                         update_listing_status(symbol, 'BASE_BREAKOUT')
+                        
+                        try:
+                            from db import positions_col
+                            active_count = positions_col.count_documents({"status": "ACTIVE"})
+                            portfolio_full = active_count >= scanner_module.MAX_ACTIVE_POSITIONS
+                        except Exception:
+                            portfolio_full = False
+                            
+                        _mr = get_market_regime(datetime.today().date())
+                        size_mult = scanner_module.REGIME_SIZE_MULT.get(_mr, 0.5)
+
                         alert_msg = format_base_breakout_alert(breakout)
+                        if portfolio_full:
+                            alert_msg = "⚠️ <b>[PORTFOLIO FULL - PAPER ONLY]</b>\n" + alert_msg
+                        alert_msg += f"\n\n⚖️ <b>Regime Size Weight:</b> {size_mult:.2f}x ({_mr})"
                         send_telegram(alert_msg)
                         breakouts_found += 1
 

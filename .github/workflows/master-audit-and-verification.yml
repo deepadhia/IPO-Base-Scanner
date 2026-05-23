@@ -81,6 +81,15 @@ jobs:
           echo "🧪 Running Institutional Infrastructure Verification..."
           python verify_institutional_infra.py
           
+      - name: Run Nightly DB Reconciliation Audit
+        env:
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+          UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          echo "🔍 Running Nightly DB Reconciliation Audit..."
+          python scripts/nightly_db_audit.py
+
       - name: Run Master System Audit
         env:
           MONGO_URI: ${{ secrets.MONGO_URI }}

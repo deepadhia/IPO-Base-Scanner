@@ -60,6 +60,29 @@ It is a tactical alerting layer and writes structured JSONL logs to the same dai
 
 ---
 
+## 💼 Portfolio Allocation & Risk Control (v2.5.0)
+
+### 1. Portfolio Caps & `PAPER_ONLY` Gating
+To protect live capital, the system enforces a strict **Portfolio Cap Guard** (configurable via environment variable `MAX_ACTIVE_POSITIONS`, defaults to `5` active trades):
+* **Cap Check:** Before executing a new active trade, the scanner counts active documents in MongoDB. If the count is $\ge \text{MAX\_ACTIVE\_POSITIONS}$:
+  * The breakout signal is saved in the `signals` collection with status `"PAPER_ONLY"`.
+  * The live position is **not** written to the `positions` collection.
+  * The Telegram notification is prefixed with **`⚠️ [PORTFOLIO FULL - PAPER ONLY]`**.
+* **Analytical Treatment:** `PAPER_ONLY` signals are included in raw strategy expectancy analytics (evaluating setups' raw predictive capacity) but are filtered out from live capital performance calculations (querying `status: {"$in": ["ACTIVE", "CLOSED"]}`).
+
+### 2. Soft Regime-Based Sizing
+Market regimes (`BULL`, `WEAK_BULL`, `CORRECTION`, `RANGE`) are used purely as **soft position sizing and ranking inputs** instead of binary switches:
+* **Size Multipliers:** Enforced via environment-backed configurations:
+  * `BULL`: `1.0x` | `WEAK_BULL`: `0.75x` | `CORRECTION`: `0.5x` | `RANGE`: `0.5x`
+* The sizing weight is saved in the signal/position document (`position_size_weight`) and broadcasted in Telegram alerts (e.g. `⚖️ Regime Size Weight: 0.50x`).
+
+### 3. Archetype-Sensitive Dead-Money Speed Gate
+To maximize capital velocity and prevent capital from getting locked in flat breakout setups, the stop-loss trailing routine (`stop_loss_update_scan()`) applies time-based dead-money gates:
+* **IPO Discovery Breakouts (`grade == "LISTING_BREAKOUT"`):** If held for $\ge 12$ trading days and peak runup has never reached $\ge 4\%$, it is closed at the market with exit reason `"Time Stop - IPO Dead Money"`.
+* **Consolidation Breakouts:** If held for $\ge 21$ trading days and peak runup has never reached $\ge 5\%$, it is closed at the market with exit reason `"Time Stop - Consolidation Dead Money"`.
+
+---
+
 ## 🚫 Rejection Logic (Critical Filters)
 
 The system rejects aggressively. A setup is terminated at the first failing condition:
@@ -242,6 +265,20 @@ Exit codes: `0` = PASS · `1` = WARN · `2` = FAIL
 
 > The audit is aware of all three signal statuses (`ACTIVE`, `CLOSED`, `WATCH`) and excludes watchlist
 > candidates from checks that only apply to executed trade signals.
+
+### 🛡️ Nightly DB Reconciliation Audit (`scripts/nightly_db_audit.py`)
+
+Added in **v2.5.0** — a defensive nightly audit running automatically at **11:00 PM IST (5:30 PM UTC)** to enforce database and pricing integrity.
+*   **Checks Performed:**
+    *   **Status Sync:** Verifies active signals match active positions 1-to-1.
+    *   **Numerical Schema:** Scans for NaN/Null value corruptions (context-aware per collection/status).
+    *   **Stale Positions:** Flags active positions not updated in >48 hours.
+    *   **Snapshot Duplication:** Detects duplicate daily snapshots.
+    *   **PnL & Price Discontinuity:** Flags single-day price jumps (>40%) and warns on >20% live vs. stored close discrepancies.
+*   **CI & Alerting Behavior:**
+    *   Constructs HTML reports and alerts via **Telegram** when executed in GitHub Actions.
+    *   Bypasses Telegram alerts when executed locally (`is_ci = False`) to prevent testing spam.
+    *   Exits with code `0` to keep pipeline builds green, relying on Telegram as the primary notification mechanism.
 
 ### 🏆 Winner Trait Classification (`winner_label` field)
 

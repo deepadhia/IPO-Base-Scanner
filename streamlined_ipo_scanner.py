@@ -800,6 +800,29 @@ MIN_TRAIL_MOVE_PCT = get_env_float("MIN_TRAIL_MOVE_PCT", 1.0)
 MIN_DAYS_BETWEEN_SIGNALS = get_env_int("MIN_DAYS_BETWEEN_SIGNALS", 10)
 MIN_LIVE_GRADE = os.getenv("MIN_LIVE_GRADE", "C") # Reset to C for Permissive base
 
+# --- Capital Allocation, Velocity Gates, and Sizing Configurations (Phase 2.6) ---
+MAX_ACTIVE_POSITIONS = get_env_int("MAX_ACTIVE_POSITIONS", 5)
+
+# Dead-money speed gate thresholds by archetype
+DEAD_MONEY_DAYS_IPO = get_env_int("DEAD_MONEY_DAYS_IPO", 12)
+DEAD_MONEY_RUNUP_IPO = get_env_float("DEAD_MONEY_RUNUP_IPO", 4.0)
+
+DEAD_MONEY_DAYS_CONSOL = get_env_int("DEAD_MONEY_DAYS_CONSOL", 21)
+DEAD_MONEY_RUNUP_CONSOL = get_env_float("DEAD_MONEY_RUNUP_CONSOL", 5.0)
+
+DEAD_MONEY_DAYS_OTHER = get_env_int("DEAD_MONEY_DAYS_OTHER", 30)
+DEAD_MONEY_RUNUP_OTHER = get_env_float("DEAD_MONEY_RUNUP_OTHER", 5.0)
+
+# Soft regime sizing weights
+REGIME_SIZE_MULT = {
+    "BULL": get_env_float("REGIME_SIZE_MULT_BULL", 1.0),
+    "WEAK_BULL": get_env_float("REGIME_SIZE_MULT_WEAK_BULL", 0.75),
+    "CORRECTION": get_env_float("REGIME_SIZE_MULT_CORRECTION", 0.5),
+    "RANGE": get_env_float("REGIME_SIZE_MULT_RANGE", 0.5),
+    "UNKNOWN": get_env_float("REGIME_SIZE_MULT_UNKNOWN", 0.5)
+}
+
+
 # --- Meta-Observability: Config Drift Detection ──────────────────────────────
 def get_last_trading_day(target_date=None):
     """Calculate the most recent date that was NOT a weekend or NSE holiday."""
@@ -2993,10 +3016,12 @@ def detect_scan(symbols, listing_map):
                 # Explainability & Winner traits components
                 vol_ratio_val = df["VOLUME"].iat[j] / avgv if avgv > 0 else 0.0
                 _nifty_slope_now = None
+                _mr = "UNKNOWN"
                 try:
                     from enrichment.market import compute_market_context
                     _mc = compute_market_context(df["DATE"].iat[j])
                     _nifty_slope_now = _mc.get("nifty_trend_slope")
+                    _mr = get_market_regime(df["DATE"].iat[j])
                 except Exception:
                     pass
 
@@ -3008,6 +3033,16 @@ def detect_scan(symbols, listing_map):
                     nifty_slope=_nifty_slope_now,
                 )
 
+                # --- Capital Allocation Gate: Max Active Positions Limit ---
+                try:
+                    from db import positions_col
+                    active_count = positions_col.count_documents({"status": "ACTIVE"})
+                    portfolio_full = active_count >= MAX_ACTIVE_POSITIONS
+                except Exception:
+                    portfolio_full = False
+                    
+                size_mult = REGIME_SIZE_MULT.get(_mr, 0.5)
+
                 row = {
                     "signal_id": sid, "symbol": sym, "signal_date": date_str,
                     "signal_time": datetime.now().strftime("%H:%M:%S"),
@@ -3017,28 +3052,43 @@ def detect_scan(symbols, listing_map):
                     "consolidation_window": w,
                     "grade": grade, "score": score,
                     "stop_loss": stop, "target_price": target,
-                    "status": "ACTIVE", "exit_date": "", "exit_price": 0,
-                    "pnl_pct": 0, "days_held": 0, "signal_type": "CONSOLIDATION",
+                    "status": "ACTIVE" if not portfolio_full else "PAPER_ONLY", 
+                    "exit_date": "", "exit_price": 0, "pnl_pct": 0, "days_held": 0, "signal_type": "CONSOLIDATION",
                     "winner_label": winner_info["winner_label"],
                     "winner_score": winner_info["winner_score"],
                     "winner_criteria": winner_info["winner_criteria"],
                     "winner_flags": winner_info["winner_flags"],
-                    "version": SCANNER_VERSION, "scanner": "consolidation_scan"
+                    "position_size_weight": size_mult,
+                    "market_regime": _mr,
+                    "version": SCANNER_VERSION, "scanner": "consolidation_scan",
+                    "strategy_version": "2.5.0-consolidation",
+                    "execution_version": "2.5.0-single-writer",
+                    "risk_model_version": "2.5.0-archetype-velocity"
                 }
                 
                 pos = {
                     "symbol": sym, "entry_date": date_str, "entry_price": entry,
                     "grade": grade, "current_price": entry, "stop_loss": stop,
-                    "trailing_stop": stop, "pnl_pct": 0, "days_held": 0, "status": "ACTIVE",
+                    "trailing_stop": stop, "pnl_pct": 0, "days_held": 0, 
+                    "status": "ACTIVE" if not portfolio_full else "PAPER_ONLY",
                     "winner_label": winner_info["winner_label"],
-                    "winner_score": winner_info["winner_score"]
+                    "winner_score": winner_info["winner_score"],
+                    "position_size_weight": size_mult,
+                    "market_regime": _mr,
+                    "strategy_version": "2.5.0-consolidation",
+                    "execution_version": "2.5.0-single-writer",
+                    "risk_model_version": "2.5.0-archetype-velocity"
                 }
                 
                 # DB-only write
                 try:
-                    from db import upsert_signal, upsert_position, db_metrics
+                    from db import upsert_signal, upsert_position
                     upsert_signal(row.copy())
-                    upsert_position(pos.copy())
+                    if not portfolio_full:
+                        upsert_position(pos.copy())
+                        logger.info(f"✅ Opened ACTIVE trade for {sym} (Portfolio: {active_count + 1}/{MAX_ACTIVE_POSITIONS})")
+                    else:
+                        logger.warning(f"⏭️ Portfolio FULL ({active_count}/{MAX_ACTIVE_POSITIONS}). Logged {sym} as PAPER_ONLY.")
                 except Exception as db_e:
                     logger.error(f"[MongoDB] DB write FAILED for {sym}: {db_e}")
                     try:
@@ -3102,7 +3152,10 @@ def detect_scan(symbols, listing_map):
                 # Add signal type and version to alert
                 signal_msg = signal_msg.replace("🎯 <b>IPO BREAKOUT SIGNAL</b>", 
                                                "🎯 <b>CONSOLIDATION BREAKOUT SIGNAL</b>\n\n📋 <b>Signal Type:</b> Consolidation-Based Breakout")
-                signal_msg += f"\n\n🤖 Scanner v{SCANNER_VERSION} | {datetime.now().strftime('%Y-%m-%d %H:%M IST')}"
+                if portfolio_full:
+                    signal_msg = "⚠️ <b>[PORTFOLIO FULL - PAPER ONLY]</b>\n" + signal_msg
+                signal_msg += f"\n\n⚖️ <b>Regime Size Weight:</b> {size_mult:.2f}x ({_mr})"
+                signal_msg += f"\n🤖 Scanner v{SCANNER_VERSION} | {datetime.now().strftime('%Y-%m-%d %H:%M IST')}"
                 send_telegram(signal_msg)
                 signals_found += 1
                 logger.info(f"🎯 Signal found: {sym} - {grade} grade at {entry}")
@@ -3510,11 +3563,26 @@ def stop_loss_update_scan():
             if current_price <= old_trailing:  # Use OLD trailing stop for exit check, not new one
                 exit_reason = "Stop Loss"
             elif not is_winner_archetype:
-                # Time-based stops only apply to non-winners (stale/dead trades)
-                if days_held > 30 and current_price < entry_price * 0.95:
-                    exit_reason = "Time Stop -5%"
-                elif days_held > 60 and current_price < entry_price * 0.92:
-                    exit_reason = "Time Stop -8%"
+                # Archetype-sensitive dead-money speed gate (velocity threshold)
+                grade = pos.get("grade", "N/A")
+                is_ipo_discovery = (grade == "LISTING_BREAKOUT")
+                
+                if is_ipo_discovery:
+                    # IPO Discovery: Momentum is front-loaded. Cut faster!
+                    if days_held >= DEAD_MONEY_DAYS_IPO and new_max_runup < DEAD_MONEY_RUNUP_IPO:
+                        exit_reason = f"Time Stop - IPO Dead Money (No momentum after {DEAD_MONEY_DAYS_IPO} days)"
+                else:
+                    # Consolidation: Slightly longer leash
+                    if days_held >= DEAD_MONEY_DAYS_CONSOL and new_max_runup < DEAD_MONEY_RUNUP_CONSOL:
+                        exit_reason = f"Time Stop - Consolidation Dead Money (No momentum after {DEAD_MONEY_DAYS_CONSOL} days)"
+                
+                # Standard legacy time stops for minor losers (fallbacks)
+                if not exit_reason:
+                    if days_held > DEAD_MONEY_DAYS_OTHER and current_price < entry_price * 0.95:
+                        exit_reason = f"Time Stop -5% (Underperforming after {DEAD_MONEY_DAYS_OTHER} days)"
+                    elif days_held > 60 and current_price < entry_price * 0.92:
+                        exit_reason = "Time Stop -8% (Underperforming after 60 days)"
+
             
             if exit_reason:
                 # Outcome Classification
