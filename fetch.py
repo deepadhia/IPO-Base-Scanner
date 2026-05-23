@@ -65,6 +65,49 @@ def fetch_recent_ipo_symbols(years_back=3):
                     companies = recent_ipos[name_col].tolist() if name_col else symbols
                     dates = recent_ipos[date_col].dt.strftime('%Y-%m-%d').tolist()
                     
+                    # --- Penny Stock Filtering (< Rs.25) via Bulk yfinance ---
+                    print(f"[*] Bulk checking close prices for {len(symbols)} IPOs to filter out penny stocks (< Rs.25)...")
+                    try:
+                        import yfinance as yf
+                        tickers_ns = [f"{s}.NS" for s in symbols]
+                        
+                        # Bulk download latest price (Group_by ticker)
+                        prices_df = yf.download(tickers_ns, period="1d", progress=False)
+                        
+                        valid_symbols = []
+                        valid_companies = []
+                        valid_dates = []
+                        
+                        for idx_sym, sym in enumerate(symbols):
+                            ticker = f"{sym}.NS"
+                            close_price = None
+                            try:
+                                # yfinance MultiIndex check
+                                if isinstance(prices_df.columns, pd.MultiIndex):
+                                    if ticker in prices_df.columns.levels[0]:
+                                        close_price = float(prices_df[ticker]['Close'].iloc[-1])
+                                else:
+                                    if 'Close' in prices_df.columns:
+                                        close_price = float(prices_df['Close'][ticker].iloc[-1])
+                            except Exception:
+                                pass
+                                
+                            if close_price is not None and close_price < 25.0:
+                                print(f"  [Skip] Filtering out penny stock from fetch: {sym} (Price Rs.{close_price:.2f} < Rs.25.00)")
+                                continue
+                                
+                            valid_symbols.append(sym)
+                            if name_col:
+                                valid_companies.append(companies[idx_sym])
+                            valid_dates.append(dates[idx_sym])
+                            
+                        symbols = valid_symbols
+                        companies = valid_companies if name_col else symbols
+                        dates = valid_dates
+                        print(f"[OK] Filtered symbol list: {len(symbols)} symbols remain after price filter")
+                    except Exception as e:
+                        print(f"[Warning] Bulk price filter failed: {e}. Proceeding with all symbols.")
+                    
                     print(f"[OK] NSE API: Found {len(symbols)} recent IPOs")
                     
                     df_symbols = pd.DataFrame({

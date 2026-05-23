@@ -652,7 +652,8 @@ def calculate_grade_based_stop_loss(entry_price, consolidation_low, grade):
         "A": 0.07,   # 7% - Good confidence
         "B": 0.10,   # 10% - Medium confidence, more room for volatility
         "C": 0.12,   # 12% - Lower confidence, more volatile
-        "D": 0.15    # 15% - High risk, very volatile
+        "D": 0.15,   # 15% - High risk, very volatile
+        "LISTING_BREAKOUT": 0.10  # 10% - Explicit trailing stop for listing breakouts
     }
     
     stop_pct = grade_stop_pcts.get(grade, 0.10)  # Default 10% for unknown grades
@@ -783,6 +784,7 @@ MIN_AGE_DAYS = get_env_int("MIN_AGE_DAYS", 60)
 MIN_DAILY_TURNOVER_CR = get_env_float("MIN_DAILY_TURNOVER_CR", 2.0)
 MIN_MARKET_CAP_CR     = get_env_float("MIN_MARKET_CAP_CR", 500.0)
 CIRCUIT_DAY_THRESHOLD = get_env_int("CIRCUIT_DAY_THRESHOLD", 3)
+MIN_ENTRY_PRICE_RS    = get_env_float("MIN_ENTRY_PRICE_RS", 25.0)
 
 # Risk / reward and trailing configuration (tunable via .env)
 # - MAX_ENTRY_ABOVE_BREAKOUT_PCT: max % above breakout/high we'll accept as entry
@@ -1587,17 +1589,6 @@ def update_positions():
             else:
                 logger.warning(f"⚠️ Using yesterday's close for {sym}: ₹{current_price:.2f} (market may be closed)")
         
-        # Calculate supertrend for trailing stop (need fresh data)
-        # Only fetch if we don't already have df from above
-        if current_price is None or 'df' not in locals():
-            df = fetch_data(sym, start)
-        if df is None or df.empty:
-            logger.warning(f"Could not fetch data for supertrend calculation for {sym}")
-            trailing = float(pos["stop_loss"])  # Fallback to original stop loss
-        else:
-            st = supertrend(df)
-            trailing = max(float(pos["stop_loss"]), float(st.iloc[-1]))
-        
         pnl = (current_price - float(pos["entry_price"]))/float(pos["entry_price"])*100
         
         # Calculate days held correctly
@@ -1630,71 +1621,38 @@ def update_positions():
             except Exception as e:
                 logger.error(f"❌ Failed to record lifecycle update for {sym}: {e}")
 
+        # --- Single-Writer Refactor (Phase 2) ---
+        # Exits and trailing-stop updates are owned SOLELY by stop_loss_update_scan()
+        # update_positions() only performs a price and metrics snapshot refresh.
         
-        # Enhanced exit strategies
-        exit_reason = None
+        df_pos.loc[idx, ["current_price", "pnl_pct", "days_held", "max_runup_pct", "max_drawdown_pct"]] = [
+            float(current_price), float(pnl), int(days), new_max_runup, new_max_drawdown
+        ]
         
-        # Tiered Time-Based Stops
-        if days > 30 and current_price < pos["entry_price"] * 0.95:
-            exit_reason = "Time Stop -5%"
-        elif days > 60 and current_price < pos["entry_price"] * 0.92:
-            exit_reason = "Time Stop -8%"
-        
-        # Traditional stop loss
-        if current_price <= trailing:
-            exit_reason = "Stop Loss"
-        
-        if exit_reason:
-            # Outcome Classification
-            outcome_type = "NO_FOLLOW_THROUGH"
-            time_to_failure_days = None
-            time_to_failure_min = None
+        # Conflict Detection Guard: Warn if the position has breached its stop loss,
+        # but do NOT trigger an exit. Let stop_loss_update_scan() handle it authoritatively.
+        active_trailing = float(pos.get("trailing_stop", pos["stop_loss"]))
+        if current_price <= active_trailing:
+            logger.warning(
+                f"⚠️ [update_positions] {sym} is below stop "
+                f"(price={current_price:.2f}, stop={active_trailing:.2f}). "
+                f"Exits are deferred to stop_loss_update_scan()."
+            )
             
-            if new_max_runup > 10.0 and days <= 5:
-                outcome_type = "FAST_WINNER"
-            elif new_max_runup > 10.0 and days > 5:
-                outcome_type = "SLOW_WINNER"
-            elif new_max_runup <= 3.0 and new_max_drawdown <= -3.0:
-                outcome_type = "FAILED_BREAKOUT"
-                time_to_failure_days = days
-            elif new_max_runup < 1.0 and exit_reason == "Stop Loss":
-                outcome_type = "IMMEDIATE_FAILURE"
-                time_to_failure_days = days
-            elif new_max_runup > 3.0 and new_max_runup <= 8.0:
-                outcome_type = "NO_FOLLOW_THROUGH"
-            
-            holding_efficiency_pct = None
-            if new_max_runup >= 5.0:
-                holding_efficiency_pct = round((pnl / new_max_runup) * 100.0, 2)
-
-            # Derived analytic metric for faster failure diagnostics (no strategy impact)
-            if time_to_failure_days is not None:
-                time_to_failure_min = int(time_to_failure_days * 390)
-                
-            df_pos.loc[idx, ["status","exit_date","exit_price","pnl_pct","days_held", "max_runup_pct", "max_drawdown_pct", "outcome_type", "holding_efficiency_pct", "time_to_failure_days", "time_to_failure_min"]] = [
-                "CLOSED", datetime.today().strftime("%Y-%m-%d"),
-                float(current_price), float(pnl), int(days),
-                new_max_runup, new_max_drawdown, outcome_type, holding_efficiency_pct, time_to_failure_days, time_to_failure_min
-            ]
-            close_active_signal(sym, current_price, pnl, days, exit_reason)
-            
-            # --- Outcome Evaluation (Phase 2.2) ---
-            if ANALYTICS_AVAILABLE and analytics_repo:
-                try:
-                    sig_id = analytics_repo.generate_deterministic_id(sym, start)
-                    evaluate_signal_outcome(analytics_repo, sig_id)
-                except Exception as e:
-                    logger.error(f"❌ Failed to evaluate outcome for {sym}: {e}")
-
-            # Send detailed exit alert
-            exit_msg = format_exit_alert(sym, exit_reason, current_price, pnl, days, pos["entry_price"])
-            # Append outcome visually
-            exit_msg += f"\n\n📊 <b>Outcome:</b> {outcome_type} (Peak: +{new_max_runup:.1f}%)"
-            send_telegram(exit_msg)
-        else:
-            df_pos.loc[idx, ["current_price","trailing_stop","pnl_pct","days_held", "max_runup_pct", "max_drawdown_pct"]] = [
-                float(current_price), float(trailing), float(pnl), int(days), new_max_runup, new_max_drawdown
-            ]
+        # Persist price and metrics refresh to MongoDB (Fixes Bug B2)
+        try:
+            from db import upsert_position
+            upsert_position({
+                "symbol": sym,
+                "current_price": float(current_price),
+                "pnl_pct": float(pnl),
+                "days_held": int(days),
+                "max_runup_pct": float(new_max_runup),
+                "max_drawdown_pct": float(new_max_drawdown),
+                "updated_at": datetime.now(timezone.utc),
+            })
+        except Exception as e:
+            logger.error(f"Failed to persist price refresh for {sym} to MongoDB: {e}")
     
     # Positions are already written row-by-row via upsert_position inside the loop above;
     # no batch CSV write needed.
@@ -2051,11 +2009,19 @@ def detect_live_patterns(symbols, listing_map):
                         else:
                             primary_reason = "structurally_broken"
                     
-                    _log_rejection_telemetry(primary_reason, prng, MAX_PRNG, current_metrics,
-                                             potential_entry=realistic_entry,
-                                             potential_stop=round(realistic_entry * 0.92, 2),
-                                             potential_target=round(realistic_entry * 1.20, 2),
-                                             pattern_type=classify_pattern_type("UNKNOWN", ipo_age_for_log, vol_ratio, prng))
+                    # Skip logging microcap or liquidity/penny stocks to prevent DB pollution
+                    is_penny_or_microcap = (
+                        RC_MICROCAP_PENALTY in bucket_reasons 
+                        or RC_LIQUIDITY_TRAP in bucket_reasons 
+                        or f"{RC_LIQUIDITY_TRAP}_CIRCUITS" in bucket_reasons
+                    )
+                    
+                    if not is_penny_or_microcap:
+                        _log_rejection_telemetry(primary_reason, prng, MAX_PRNG, current_metrics,
+                                                 potential_entry=realistic_entry,
+                                                 potential_stop=round(realistic_entry * 0.92, 2),
+                                                 potential_target=round(realistic_entry * 1.20, 2),
+                                                 pattern_type=classify_pattern_type("UNKNOWN", ipo_age_for_log, vol_ratio, prng))
                     continue
 
                 # 7. Volume Validation for ALIGNED bucket
@@ -2198,9 +2164,8 @@ def detect_live_patterns(symbols, listing_map):
                     logger.warning(f"⚠️ No live price available, using latest close: ₹{entry:.2f} from {latest_date_str}")
                 
                 # --- PRICE FLOOR GUARDRAIL ---
-                if entry < 20.0:
-                    logger.info(f"⏭️ Skipping {sym} - Price ₹{entry:.2f} is below ₹20.00 floor")
-                    _log_consolidation_reject_once({"reason": "price_below_floor", "price": round(entry, 2), "floor": 20.0, **metrics})
+                if entry < MIN_ENTRY_PRICE_RS:
+                    logger.info(f"⏭️ Skipping {sym} - Price ₹{entry:.2f} is below ₹{MIN_ENTRY_PRICE_RS:.2f} floor")
                     continue
                 # -----------------------------
 
@@ -2939,11 +2904,33 @@ def detect_scan(symbols, listing_map):
                     logger.warning(f"⚠️ No live price available, using latest close: ₹{entry:.2f} from {latest_date_str}")
 
                 # --- PRICE FLOOR GUARDRAIL ---
-                if entry < 20.0:
-                    logger.info(f"⏭️ Skipping {sym} - Price ₹{entry:.2f} is below ₹20.00 floor")
-                    _log_scan_reject_once({"reason": "price_below_floor", "price": round(entry, 2), "floor": 20.0, **metrics})
+                # --- PRICE FLOOR GUARDRAIL ---
+                if entry < MIN_ENTRY_PRICE_RS:
+                    logger.info(f"⏭️ Skipping {sym} - Price ₹{entry:.2f} is below ₹{MIN_ENTRY_PRICE_RS:.2f} floor")
                     continue
                 # -----------------------------
+
+                # --- INSTITUTIONAL LIQUIDITY & MICROCAP GUARDRAILS (Phase 2.5) ---
+                avg_turnover_cr, circuit_days_15, mcap_cr = get_liquidity_metrics(sym, df)
+                liquidity_metrics = {
+                    "avg_turnover_cr": avg_turnover_cr,
+                    "circuit_days_15": circuit_days_15,
+                    "market_cap_cr": mcap_cr
+                }
+
+                if avg_turnover_cr > 0 and avg_turnover_cr < MIN_DAILY_TURNOVER_CR:
+                    logger.info(f"⏭️ Skipping {sym} - Turnover ₹{avg_turnover_cr:.2f}Cr is below ₹{MIN_DAILY_TURNOVER_CR:.1f}Cr floor")
+                    continue
+                if circuit_days_15 >= CIRCUIT_DAY_THRESHOLD:
+                    logger.info(f"⏭️ Skipping {sym} - Frequent circuits detected ({circuit_days_15} days)")
+                    continue
+                if mcap_cr > 0 and mcap_cr < MIN_MARKET_CAP_CR:
+                    logger.info(f"⏭️ Skipping {sym} - Market Cap ₹{mcap_cr:.1f}Cr is below ₹{MIN_MARKET_CAP_CR:.1f}Cr floor")
+                    continue
+                
+                # Enrich metrics with liquidity telemetry for logging
+                metrics.update(liquidity_metrics)
+                # ------------------------------------------------------------------
                 
                 # Entry date should be the next trading day after breakout
                 if j + 1 < len(df):
@@ -3003,6 +2990,24 @@ def detect_scan(symbols, listing_map):
                 breakout_close_ref_scan = float(df["CLOSE"].iat[j]) if j < len(df) else entry
                 entry_note_scan = "LIVE_INTRADAY" if (live_price is not None and is_market_hours()) else ("NEXT_DAY_CLOSE" if j + 1 < len(df) else "FALLBACK_CLOSE")
 
+                # Explainability & Winner traits components
+                vol_ratio_val = df["VOLUME"].iat[j] / avgv if avgv > 0 else 0.0
+                _nifty_slope_now = None
+                try:
+                    from enrichment.market import compute_market_context
+                    _mc = compute_market_context(df["DATE"].iat[j])
+                    _nifty_slope_now = _mc.get("nifty_trend_slope")
+                except Exception:
+                    pass
+
+                winner_info = classify_winner_traits(
+                    grade=grade,
+                    consolidation_window=w,
+                    volume_ratio=vol_ratio_val,
+                    consolidation_range_pct=prng,
+                    nifty_slope=_nifty_slope_now,
+                )
+
                 row = {
                     "signal_id": sid, "symbol": sym, "signal_date": date_str,
                     "signal_time": datetime.now().strftime("%H:%M:%S"),
@@ -3014,13 +3019,19 @@ def detect_scan(symbols, listing_map):
                     "stop_loss": stop, "target_price": target,
                     "status": "ACTIVE", "exit_date": "", "exit_price": 0,
                     "pnl_pct": 0, "days_held": 0, "signal_type": "CONSOLIDATION",
+                    "winner_label": winner_info["winner_label"],
+                    "winner_score": winner_info["winner_score"],
+                    "winner_criteria": winner_info["winner_criteria"],
+                    "winner_flags": winner_info["winner_flags"],
                     "version": SCANNER_VERSION, "scanner": "consolidation_scan"
                 }
                 
                 pos = {
                     "symbol": sym, "entry_date": date_str, "entry_price": entry,
                     "grade": grade, "current_price": entry, "stop_loss": stop,
-                    "trailing_stop": stop, "pnl_pct": 0, "days_held": 0, "status": "ACTIVE"
+                    "trailing_stop": stop, "pnl_pct": 0, "days_held": 0, "status": "ACTIVE",
+                    "winner_label": winner_info["winner_label"],
+                    "winner_score": winner_info["winner_score"]
                 }
                 
                 # DB-only write
@@ -3037,7 +3048,6 @@ def detect_scan(symbols, listing_map):
                         pass
                 
                 # Explainability components (local scope for logging)
-                vol_ratio_val = df["VOLUME"].iat[j] / avgv if avgv > 0 else 0.0
                 tier_weight = 4.0 if grade == 'A+' else (3.0 if grade == 'A' else (2.0 if grade == 'B' else 1.0))
                 volume_score = min(2.0, float(vol_ratio_val) / 2.0)
                 base_score = 1.0
@@ -3059,6 +3069,8 @@ def detect_scan(symbols, listing_map):
                     "volume_score": round(volume_score, 2),
                     "base_score": round(base_score, 2),
                     "momentum_score": round(momentum_score, 2),
+                    "winner_label": winner_info["winner_label"],
+                    "winner_score": winner_info["winner_score"],
                 }
                 
                 write_daily_log("consolidation", sym, "ACCEPTED_BREAKOUT", sig_doc)
@@ -3571,6 +3583,8 @@ def stop_loss_update_scan():
                         except:
                             pass
                         clean_pos[k] = v
+                    clean_pos["exit_reason"] = exit_reason
+                    clean_pos["outcome_type"] = outcome_type
                     upsert_position(clean_pos)
                 except Exception as db_e:
                     logger.error(f"Failed to persist position exit for {sym}: {db_e}")
@@ -3609,6 +3623,9 @@ def stop_loss_update_scan():
                     "price_source": price_source,
                     "max_runup_pct": round(new_max_runup, 2),
                     "max_drawdown_pct": round(new_max_drawdown, 2),
+                    "market_regime": get_market_regime(),
+                    "winner_label": pos.get("winner_label", "MISSING"),
+                    "exit_reason": None,
                 })
 
                 # Count only real trailing-stop improvements as "updates"

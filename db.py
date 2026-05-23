@@ -522,8 +522,11 @@ def close_signal_in_db(symbol: str, exit_price: float, pnl_pct: float, days_held
     if signals_col is None:
         return
     try:
-        signals_col.update_one(
-            {"symbol": symbol, "status": "ACTIVE"},
+        signals_col.update_many(
+            {"symbol": symbol, "$or": [
+                {"status": "ACTIVE"},
+                {"lifecycle_state": "POSITION_ACTIVE"},
+            ]},
             {"$set": {
                 "status": "CLOSED",
                 "lifecycle_state": "CLOSED",
@@ -546,6 +549,7 @@ def close_signal_in_db(symbol: str, exit_price: float, pnl_pct: float, days_held
                     "exit_price": float(exit_price),
                     "pnl_pct": float(pnl_pct),
                     "days_held": int(days_held),
+                    "exit_reason": exit_reason,
                     "updated_at": datetime.now(timezone.utc),
                 }}
             )

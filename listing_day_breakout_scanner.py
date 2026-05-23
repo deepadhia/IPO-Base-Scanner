@@ -949,8 +949,8 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None):
                 logger.info(f"⚠️ Using yesterday's close for {symbol}: ₹{current_price:.2f} (market may be closed)")
 
         # --- PRICE FLOOR GUARDRAIL (Second Check) ---
-        if current_price is not None and current_price < 20.0:
-            logger.info(f"⏭️ Skipping {symbol} - Price ₹{current_price:.2f} is below ₹20.00 floor")
+        if current_price is not None and current_price < scanner_module.MIN_ENTRY_PRICE_RS:
+            logger.info(f"⏭️ Skipping {symbol} - Price ₹{current_price:.2f} is below ₹{scanner_module.MIN_ENTRY_PRICE_RS:.2f} floor")
             return None
         # --------------------------------------------
         
