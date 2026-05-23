@@ -21,6 +21,9 @@ from pymongo import MongoClient
 from dotenv import load_dotenv
 from datetime import datetime
 
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+
 load_dotenv()
 
 MONGO_URI = os.getenv("MONGO_URI")
