@@ -920,9 +920,10 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None):
             "market_cap_cr": mcap_cr
         }
 
-        if avg_turnover_cr > 0 and avg_turnover_cr < scanner_module.MIN_DAILY_TURNOVER_CR:
-            logger.info(f"⏭️ Skipping {symbol} - Turnover ₹{avg_turnover_cr:.2f}Cr is below ₹{scanner_module.MIN_DAILY_TURNOVER_CR}Cr floor")
-            _log_listing_rejection("LIQUIDITY_TRAP", avg_turnover_cr, scanner_module.MIN_DAILY_TURNOVER_CR, liquidity_metrics)
+        turnover_floor = scanner_module.get_turnover_floor(mcap_cr)
+        if avg_turnover_cr > 0 and avg_turnover_cr < turnover_floor:
+            logger.info(f"⏭️ Skipping {symbol} - Turnover ₹{avg_turnover_cr:.2f}Cr is below ₹{turnover_floor}Cr floor (Mcap: ₹{mcap_cr:.1f}Cr)")
+            _log_listing_rejection("LIQUIDITY_TRAP", avg_turnover_cr, turnover_floor, liquidity_metrics)
             return None
         if circuit_days_15 >= scanner_module.CIRCUIT_DAY_THRESHOLD:
             logger.info(f"⏭️ Skipping {symbol} - Frequent circuits detected ({circuit_days_15} days)")

@@ -782,6 +782,15 @@ MIN_AGE_DAYS = get_env_int("MIN_AGE_DAYS", 60)
 
 # --- Phase 4: Institutional Liquidity Hardening (Phase 2.5) ---
 MIN_DAILY_TURNOVER_CR = get_env_float("MIN_DAILY_TURNOVER_CR", 2.0)
+MIN_DAILY_TURNOVER_SMALL_CAP_CR = get_env_float("MIN_DAILY_TURNOVER_SMALL_CAP_CR", 0.75)
+SMALL_CAP_THRESHOLD_CR = get_env_float("SMALL_CAP_THRESHOLD_CR", 3000.0)
+
+def get_turnover_floor(mcap_cr: float) -> float:
+    """Resolve the appropriate daily turnover floor based on market cap."""
+    if mcap_cr > 0 and mcap_cr < SMALL_CAP_THRESHOLD_CR:
+        return MIN_DAILY_TURNOVER_SMALL_CAP_CR
+    return MIN_DAILY_TURNOVER_CR
+
 MIN_MARKET_CAP_CR     = get_env_float("MIN_MARKET_CAP_CR", 500.0)
 CIRCUIT_DAY_THRESHOLD = get_env_int("CIRCUIT_DAY_THRESHOLD", 3)
 MIN_ENTRY_PRICE_RS    = get_env_float("MIN_ENTRY_PRICE_RS", 25.0)
@@ -2941,8 +2950,9 @@ def detect_scan(symbols, listing_map):
                     "market_cap_cr": mcap_cr
                 }
 
-                if avg_turnover_cr > 0 and avg_turnover_cr < MIN_DAILY_TURNOVER_CR:
-                    logger.info(f"⏭️ Skipping {sym} - Turnover ₹{avg_turnover_cr:.2f}Cr is below ₹{MIN_DAILY_TURNOVER_CR:.1f}Cr floor")
+                turnover_floor = get_turnover_floor(mcap_cr)
+                if avg_turnover_cr > 0 and avg_turnover_cr < turnover_floor:
+                    logger.info(f"⏭️ Skipping {sym} - Turnover ₹{avg_turnover_cr:.2f}Cr is below ₹{turnover_floor:.2f}Cr floor (Mcap: ₹{mcap_cr:.1f}Cr)")
                     continue
                 if circuit_days_15 >= CIRCUIT_DAY_THRESHOLD:
                     logger.info(f"⏭️ Skipping {sym} - Frequent circuits detected ({circuit_days_15} days)")
