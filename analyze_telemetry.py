@@ -33,11 +33,14 @@ def run_analysis(days=3):
         logger.warning(f"⚠️ No v{SCANNER_VERSION} logs found in the last {days} days.")
         return
 
-    df = pd.DataFrame(docs)
+    df = pd.DataFrame(docs).reset_index(drop=True)
     
     # Expand details into columns for analysis
-    details_df = pd.json_normalize(df['details'])
-    df = pd.concat([df.drop('details', axis=1), details_df], axis=1)
+    details_df = pd.json_normalize(df['details']).reset_index(drop=True)
+    dup_cols = [c for c in details_df.columns if c in df.columns]
+    if dup_cols:
+        details_df = details_df.drop(columns=dup_cols)
+    df = pd.concat([df.drop('details', axis=1, errors='ignore'), details_df], axis=1)
     
     # Ensure log_type exists (older 2.2.0 test logs might lack it)
     if 'log_type' not in df.columns:

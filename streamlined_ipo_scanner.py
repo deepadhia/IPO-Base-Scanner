@@ -811,6 +811,7 @@ MIN_LIVE_GRADE = os.getenv("MIN_LIVE_GRADE", "C") # Reset to C for Permissive ba
 
 # --- Capital Allocation, Velocity Gates, and Sizing Configurations (Phase 2.6) ---
 MAX_ACTIVE_POSITIONS = get_env_int("MAX_ACTIVE_POSITIONS", 5)
+HARD_ACTIVE_POSITIONS = get_env_int("HARD_ACTIVE_POSITIONS", MAX_ACTIVE_POSITIONS + 2)
 
 # Dead-money speed gate thresholds by archetype
 DEAD_MONEY_DAYS_IPO = get_env_int("DEAD_MONEY_DAYS_IPO", 12)
@@ -3043,12 +3044,25 @@ def detect_scan(symbols, listing_map):
                     nifty_slope=_nifty_slope_now,
                 )
 
-                # --- Capital Allocation Gate: Max Active Positions Limit ---
+                # --- Capital Allocation Gate: Max Active Positions Limit (Soft Cap 5 / Hard Cap 7) ---
                 try:
                     from db import positions_col
                     active_count = positions_col.count_documents({"status": "ACTIVE"})
-                    portfolio_full = active_count >= MAX_ACTIVE_POSITIONS
-                except Exception:
+                    if active_count < MAX_ACTIVE_POSITIONS:
+                        portfolio_full = False
+                    elif active_count >= HARD_ACTIVE_POSITIONS:
+                        portfolio_full = True
+                    else:
+                        # Soft cap breached but hard cap not breached: check if pristine consolidation setup
+                        is_pristine = (grade in ["A+", "A"]) or (winner_info.get("winner_score", 0) >= 4) or (_mr == "CORRECTION")
+                        if is_pristine:
+                            portfolio_full = False
+                            logger.info(f"🔓 Soft Cap Bypass: Pristine consolidation setup for {sym} (Grade: {grade}, Score: {winner_info.get('winner_score')}, Regime: {_mr}). Allowed trade up to Hard Cap ({active_count}/{HARD_ACTIVE_POSITIONS})")
+                        else:
+                            portfolio_full = True
+                            logger.info(f"🔒 Soft Cap Enforced: Standard consolidation setup for {sym} (Grade: {grade}, Score: {winner_info.get('winner_score')}, Regime: {_mr}) blocked at Soft Cap ({active_count}/{MAX_ACTIVE_POSITIONS})")
+                except Exception as cap_e:
+                    logger.error(f"Error evaluating capital allocation cap: {cap_e}")
                     portfolio_full = False
                     
                 size_mult = REGIME_SIZE_MULT.get(_mr, 0.5)
@@ -3096,9 +3110,9 @@ def detect_scan(symbols, listing_map):
                     upsert_signal(row.copy())
                     if not portfolio_full:
                         upsert_position(pos.copy())
-                        logger.info(f"✅ Opened ACTIVE trade for {sym} (Portfolio: {active_count + 1}/{MAX_ACTIVE_POSITIONS})")
+                        logger.info(f"✅ Opened ACTIVE trade for {sym} (Portfolio: {active_count + 1}, Soft Cap: {MAX_ACTIVE_POSITIONS}, Hard Cap: {HARD_ACTIVE_POSITIONS})")
                     else:
-                        logger.warning(f"⏭️ Portfolio FULL ({active_count}/{MAX_ACTIVE_POSITIONS}). Logged {sym} as PAPER_ONLY.")
+                        logger.warning(f"⏭️ Portfolio FULL ({active_count} active). Logged {sym} as PAPER_ONLY. (Soft Cap: {MAX_ACTIVE_POSITIONS}, Hard Cap: {HARD_ACTIVE_POSITIONS})")
                 except Exception as db_e:
                     logger.error(f"[MongoDB] DB write FAILED for {sym}: {db_e}")
                     try:

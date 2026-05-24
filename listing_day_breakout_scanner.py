@@ -1667,12 +1667,25 @@ def save_breakout_signal(breakout_data):
             volume_warnings = breakout_data.get('volume_warnings', [])
             volume_note = f"VOLUME_CAUTION: {'; '.join(volume_warnings)}"
         
-        # --- Capital Allocation Gate: Max Active Positions Limit ---
+        # --- Capital Allocation Gate: Max Active Positions Limit (Soft Cap 5 / Hard Cap 7) ---
         try:
             from db import positions_col
             active_count = positions_col.count_documents({"status": "ACTIVE"})
-            portfolio_full = active_count >= scanner_module.MAX_ACTIVE_POSITIONS
-        except Exception:
+            if active_count < scanner_module.MAX_ACTIVE_POSITIONS:
+                portfolio_full = False
+            elif active_count >= scanner_module.HARD_ACTIVE_POSITIONS:
+                portfolio_full = True
+            else:
+                # Soft cap breached but hard cap not breached: check if pristine listing setup
+                is_pristine = (int(breakout_data.get("leader_score", 0)) >= 8) or (breakout_data.get("tier", "") == "Tier 1") or (_mr == "CORRECTION")
+                if is_pristine:
+                    portfolio_full = False
+                    logger.info(f"🔓 Soft Cap Bypass: Pristine listing setup for {breakout_data['symbol']} (Leader Score: {breakout_data.get('leader_score')}, Tier: {breakout_data.get('tier')}, Regime: {_mr}). Allowed trade up to Hard Cap ({active_count}/{scanner_module.HARD_ACTIVE_POSITIONS})")
+                else:
+                    portfolio_full = True
+                    logger.info(f"🔒 Soft Cap Enforced: Standard listing setup for {breakout_data['symbol']} (Leader Score: {breakout_data.get('leader_score')}, Tier: {breakout_data.get('tier')}, Regime: {_mr}) blocked at Soft Cap ({active_count}/{scanner_module.MAX_ACTIVE_POSITIONS})")
+        except Exception as cap_e:
+            logger.error(f"Error evaluating listing day capital allocation cap: {cap_e}")
             portfolio_full = False
             
         _mr = get_market_regime(today)
@@ -1844,16 +1857,27 @@ def add_position(breakout_data):
     try:
         today = datetime.now().date()
         
-        # --- Capital Allocation Gate: Max Active Positions Limit ---
+        # --- Capital Allocation Gate: Max Active Positions Limit (Soft Cap 5 / Hard Cap 7) ---
         try:
             from db import positions_col
             active_count = positions_col.count_documents({"status": "ACTIVE"})
-            portfolio_full = active_count >= scanner_module.MAX_ACTIVE_POSITIONS
+            if active_count < scanner_module.MAX_ACTIVE_POSITIONS:
+                portfolio_full = False
+            elif active_count >= scanner_module.HARD_ACTIVE_POSITIONS:
+                portfolio_full = True
+            else:
+                # Soft cap breached but hard cap not breached: check if pristine listing setup
+                is_pristine = (int(breakout_data.get("leader_score", 0)) >= 8) or (breakout_data.get("tier", "") == "Tier 1") or (_mr == "CORRECTION")
+                if is_pristine:
+                    portfolio_full = False
+                    logger.info(f"🔓 Soft Cap Bypass (add_position): Pristine listing setup for {breakout_data['symbol']} (Leader Score: {breakout_data.get('leader_score')}, Tier: {breakout_data.get('tier')}, Regime: {_mr}). Allowed up to Hard Cap ({active_count}/{scanner_module.HARD_ACTIVE_POSITIONS})")
+                else:
+                    portfolio_full = True
         except Exception:
             portfolio_full = False
             
         if portfolio_full:
-            logger.warning(f"⏭️ Portfolio FULL ({active_count}/{scanner_module.MAX_ACTIVE_POSITIONS}). Skipping live position write for {breakout_data['symbol']}.")
+            logger.warning(f"⏭️ Portfolio FULL ({active_count} active). Skipping live position write for {breakout_data['symbol']}. (Soft Cap: {scanner_module.MAX_ACTIVE_POSITIONS}, Hard Cap: {scanner_module.HARD_ACTIVE_POSITIONS})")
             return True
 
         try:
@@ -1987,20 +2011,26 @@ def scan_listing_day_breakouts():
                         # Update listing status
                         update_listing_status(symbol, 'BREAKOUT')
 
+                        _mr = get_market_regime(datetime.today().date())
                         try:
                             from db import positions_col
                             active_count = positions_col.count_documents({"status": "ACTIVE"})
-                            portfolio_full = active_count >= scanner_module.MAX_ACTIVE_POSITIONS
+                            if active_count < scanner_module.MAX_ACTIVE_POSITIONS:
+                                portfolio_full = False
+                            elif active_count >= scanner_module.HARD_ACTIVE_POSITIONS:
+                                portfolio_full = True
+                            else:
+                                is_pristine = (int(breakout.get("leader_score", 0)) >= 8) or (breakout.get("tier", "") == "Tier 1") or (_mr == "CORRECTION")
+                                portfolio_full = not is_pristine
                         except Exception:
                             portfolio_full = False
                             
-                        _mr = get_market_regime(datetime.today().date())
                         size_mult = scanner_module.REGIME_SIZE_MULT.get(_mr, 0.5)
 
                         # Send alert
                         alert_msg = format_listing_breakout_alert(breakout)
                         if portfolio_full:
-                            alert_msg = "⚠️ <b>[PORTFOLIO FULL - PAPER ONLY]</b>\n" + alert_msg
+                            alert_msg = f"⚠️ <b>[PORTFOLIO FULL - PAPER ONLY]</b> (Active: {active_count}, Soft Cap: {scanner_module.MAX_ACTIVE_POSITIONS}, Hard Cap: {scanner_module.HARD_ACTIVE_POSITIONS})\n" + alert_msg
                         alert_msg += f"\n\n⚖️ <b>Regime Size Weight:</b> {size_mult:.2f}x ({_mr})"
                         send_telegram(alert_msg)
 
@@ -2014,19 +2044,25 @@ def scan_listing_day_breakouts():
                         add_position(breakout)
                         update_listing_status(symbol, 'BASE_BREAKOUT')
                         
+                        _mr = get_market_regime(datetime.today().date())
                         try:
                             from db import positions_col
                             active_count = positions_col.count_documents({"status": "ACTIVE"})
-                            portfolio_full = active_count >= scanner_module.MAX_ACTIVE_POSITIONS
+                            if active_count < scanner_module.MAX_ACTIVE_POSITIONS:
+                                portfolio_full = False
+                            elif active_count >= scanner_module.HARD_ACTIVE_POSITIONS:
+                                portfolio_full = True
+                            else:
+                                is_pristine = (int(breakout.get("leader_score", 0)) >= 8) or (breakout.get("tier", "") == "Tier 1") or (_mr == "CORRECTION")
+                                portfolio_full = not is_pristine
                         except Exception:
                             portfolio_full = False
                             
-                        _mr = get_market_regime(datetime.today().date())
                         size_mult = scanner_module.REGIME_SIZE_MULT.get(_mr, 0.5)
 
                         alert_msg = format_base_breakout_alert(breakout)
                         if portfolio_full:
-                            alert_msg = "⚠️ <b>[PORTFOLIO FULL - PAPER ONLY]</b>\n" + alert_msg
+                            alert_msg = f"⚠️ <b>[PORTFOLIO FULL - PAPER ONLY]</b> (Active: {active_count}, Soft Cap: {scanner_module.MAX_ACTIVE_POSITIONS}, Hard Cap: {scanner_module.HARD_ACTIVE_POSITIONS})\n" + alert_msg
                         alert_msg += f"\n\n⚖️ <b>Regime Size Weight:</b> {size_mult:.2f}x ({_mr})"
                         send_telegram(alert_msg)
                         breakouts_found += 1
