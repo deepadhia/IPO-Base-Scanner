@@ -1,7 +1,7 @@
 import os
 import json
 import hashlib
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from pymongo import MongoClient
 from pymongo.errors import DuplicateKeyError
 from dotenv import load_dotenv
@@ -44,10 +44,12 @@ def increment_metric(metric_name: str, count: int = 1):
     if metric_name in db_metrics:
         db_metrics[metric_name] += count
 
-def make_utc(dt: datetime) -> datetime:
-    """Ensure a datetime is timezone-aware and converted to UTC."""
-    if not isinstance(dt, datetime):
+def make_utc(dt) -> datetime:
+    """Ensure a datetime or date is timezone-aware and converted to UTC."""
+    if not isinstance(dt, date):
         return dt
+    if not isinstance(dt, datetime):
+        dt = datetime.combine(dt, datetime.min.time(), tzinfo=timezone.utc)
     if dt.tzinfo is None:
         # Assume naive datetimes originating from the system are IST
         dt = dt.replace(tzinfo=IST)
@@ -59,7 +61,7 @@ def generate_log_id(scanner: str, symbol: str, action: str, candle_timestamp, ve
     
     # 1. Standardize timestamp to DATE only for daily deduplication
     # This prevents duplicate logs if the scanner runs multiple times a day
-    if isinstance(candle_timestamp, datetime):
+    if isinstance(candle_timestamp, date):
         ts_str = candle_timestamp.strftime('%Y-%m-%d')
     else:
         ts_str = str(candle_timestamp)[:10] # Extract YYYY-MM-DD
@@ -146,7 +148,7 @@ def upsert_signal(signal_doc: dict):
         except ValueError:
             pass
             
-    if isinstance(signal_doc.get("signal_date"), datetime):
+    if isinstance(signal_doc.get("signal_date"), date):
         signal_doc["signal_date"] = make_utc(signal_doc["signal_date"])
         
     if isinstance(signal_doc.get("exit_date"), str) and signal_doc.get("exit_date"):
@@ -155,7 +157,7 @@ def upsert_signal(signal_doc: dict):
         except ValueError:
             pass
             
-    if isinstance(signal_doc.get("exit_date"), datetime):
+    if isinstance(signal_doc.get("exit_date"), date):
         signal_doc["exit_date"] = make_utc(signal_doc["exit_date"])
             
     signal_id = signal_doc.get("signal_id")
@@ -185,7 +187,7 @@ def upsert_position(position_doc: dict):
         except ValueError:
             pass
             
-    if isinstance(position_doc.get("entry_date"), datetime):
+    if isinstance(position_doc.get("entry_date"), date):
         position_doc["entry_date"] = make_utc(position_doc["entry_date"])
         
     if isinstance(position_doc.get("exit_date"), str) and position_doc.get("exit_date"):
@@ -194,7 +196,7 @@ def upsert_position(position_doc: dict):
         except ValueError:
             pass
             
-    if isinstance(position_doc.get("exit_date"), datetime):
+    if isinstance(position_doc.get("exit_date"), date):
         position_doc["exit_date"] = make_utc(position_doc["exit_date"])
             
     symbol = position_doc.get("symbol")
@@ -313,7 +315,7 @@ def upsert_ipo(symbol: str, listing_date=None, name: str = None, **kwargs):
         except ValueError:
             pass
             
-    if isinstance(listing_date, datetime):
+    if isinstance(listing_date, date):
         listing_date = make_utc(listing_date)
         
     doc = {
@@ -356,7 +358,7 @@ def upsert_listing_data(symbol: str, data: dict):
             except Exception:
                 pass
         
-        if isinstance(doc.get(date_field), datetime):
+        if isinstance(doc.get(date_field), date):
             doc[date_field] = make_utc(doc[date_field])
             
     try:
