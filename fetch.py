@@ -84,11 +84,15 @@ def fetch_recent_ipo_symbols(years_back=3):
                             try:
                                 # yfinance MultiIndex check
                                 if isinstance(prices_df.columns, pd.MultiIndex):
-                                    if ticker in prices_df.columns.levels[0]:
-                                        close_price = float(prices_df[ticker]['Close'].iloc[-1])
+                                    if 'Close' in prices_df.columns.levels[0] and ticker in prices_df.columns.levels[1]:
+                                        close_val = prices_df['Close'][ticker].iloc[-1]
+                                        if pd.notna(close_val):
+                                            close_price = float(close_val)
                                 else:
                                     if 'Close' in prices_df.columns:
-                                        close_price = float(prices_df['Close'][ticker].iloc[-1])
+                                        close_val = prices_df['Close'][ticker].iloc[-1] if isinstance(prices_df['Close'], pd.DataFrame) else prices_df['Close'].iloc[-1]
+                                        if pd.notna(close_val):
+                                            close_price = float(close_val)
                             except Exception:
                                 pass
                                 
