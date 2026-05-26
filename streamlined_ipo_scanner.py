@@ -2614,7 +2614,23 @@ def detect_live_patterns(symbols, listing_map):
                     "trailing_stop": round(stop, 2),
                     "pnl_pct": 0,
                     "days_held": 0,
-                    "status": "ACTIVE"
+                    "status": "ACTIVE",
+                    # Shadow SL tracking fields
+                    "shadow_sl_8pct": round(entry * 0.92, 2),
+                    "shadow_sl_10pct": round(entry * 0.90, 2),
+                    "shadow_sl_12pct": round(entry * 0.88, 2),
+                    "shadow_status_8pct": "ACTIVE",
+                    "shadow_status_10pct": "ACTIVE",
+                    "shadow_status_12pct": "ACTIVE",
+                    "shadow_exit_price_8pct": None,
+                    "shadow_exit_price_10pct": None,
+                    "shadow_exit_price_12pct": None,
+                    "shadow_exit_date_8pct": None,
+                    "shadow_exit_date_10pct": None,
+                    "shadow_exit_date_12pct": None,
+                    "shadow_exit_reason_8pct": None,
+                    "shadow_exit_reason_10pct": None,
+                    "shadow_exit_reason_12pct": None
                 }
                 
                 # DB-only write: signal
@@ -3101,7 +3117,23 @@ def detect_scan(symbols, listing_map):
                     "market_regime": _mr,
                     "strategy_version": "2.5.0-consolidation",
                     "execution_version": "2.5.0-single-writer",
-                    "risk_model_version": "2.5.0-archetype-velocity"
+                    "risk_model_version": "2.5.0-archetype-velocity",
+                    # Shadow SL tracking fields
+                    "shadow_sl_8pct": round(entry * 0.92, 2),
+                    "shadow_sl_10pct": round(entry * 0.90, 2),
+                    "shadow_sl_12pct": round(entry * 0.88, 2),
+                    "shadow_status_8pct": "ACTIVE" if not portfolio_full else "PAPER_ONLY",
+                    "shadow_status_10pct": "ACTIVE" if not portfolio_full else "PAPER_ONLY",
+                    "shadow_status_12pct": "ACTIVE" if not portfolio_full else "PAPER_ONLY",
+                    "shadow_exit_price_8pct": None,
+                    "shadow_exit_price_10pct": None,
+                    "shadow_exit_price_12pct": None,
+                    "shadow_exit_date_8pct": None,
+                    "shadow_exit_date_10pct": None,
+                    "shadow_exit_date_12pct": None,
+                    "shadow_exit_reason_8pct": None,
+                    "shadow_exit_reason_10pct": None,
+                    "shadow_exit_reason_12pct": None
                 }
                 
                 # DB-only write
@@ -3357,6 +3389,8 @@ def format_position_update_alert(symbol, current_price, entry_price, old_trailin
 def stop_loss_update_scan():
     """Dedicated scan for updating stop losses on active positions"""
     logger.info("🔄 Starting stop-loss update scan...")
+    # Fetch market regime once globally for this scan to avoid redundant API requests in loop
+    current_regime = get_market_regime()
     from db import get_all_positions_df, upsert_position
     df_positions = get_all_positions_df()
     
@@ -3375,7 +3409,22 @@ def stop_loss_update_scan():
     df_positions["max_runup_pct"] = df_positions["max_runup_pct"].fillna(0.0)
     df_positions["max_drawdown_pct"] = df_positions["max_drawdown_pct"].fillna(0.0)
     
-    active_positions = df_positions[df_positions["status"] == "ACTIVE"]
+    active_positions_all = df_positions
+    # Initialize shadow status columns if they do not exist
+    for col in ["shadow_status_8pct", "shadow_status_10pct", "shadow_status_12pct"]:
+        if col not in active_positions_all.columns:
+            active_positions_all[col] = active_positions_all["status"].apply(lambda s: "ACTIVE" if s == "ACTIVE" else "CLOSED")
+            
+    # Find active or shadow-active positions
+    def is_shadow_active(pos_row):
+        is_real_active = pos_row.get("status") == "ACTIVE"
+        is_shadow_active_8 = pos_row.get("shadow_status_8pct", "CLOSED") == "ACTIVE"
+        is_shadow_active_10 = pos_row.get("shadow_status_10pct", "CLOSED") == "ACTIVE"
+        is_shadow_active_12 = pos_row.get("shadow_status_12pct", "CLOSED") == "ACTIVE"
+        return is_real_active or is_shadow_active_8 or is_shadow_active_10 or is_shadow_active_12
+
+    active_mask = active_positions_all.apply(is_shadow_active, axis=1)
+    active_positions = active_positions_all[active_mask]
     
     if active_positions.empty:
         send_telegram("📊 <b>Stop-Loss Update Scan</b>\n\n✅ No active positions to update.")
@@ -3556,12 +3605,6 @@ def stop_loss_update_scan():
                 latest_date_str = latest_date.strftime('%Y-%m-%d')
                 price_source = f"Historical Close ({latest_date_str})"
                 
-                days_old = (datetime.today().date() - latest_date).days
-                if days_old == 0:
-                    logger.info(f"✅ Using today's historical close for {sym}: ₹{current_price:.2f}")
-                else:
-                    logger.warning(f"⚠️ Using yesterday's close for {sym}: ₹{current_price:.2f} (market may be closed)")
-            
             entry_price = pos["entry_price"]
             old_trailing = pos["trailing_stop"]
             
@@ -3582,179 +3625,374 @@ def stop_loss_update_scan():
             
             # Check for exits - use current price for exit decisions
             exit_reason = None
+            new_trailing = float(old_trailing)
             is_winner_archetype = (new_max_runup >= 15.0)
 
-            if current_price <= old_trailing:  # Use OLD trailing stop for exit check, not new one
-                exit_reason = "Stop Loss"
-            elif not is_winner_archetype:
-                # Archetype-sensitive dead-money speed gate (velocity threshold)
-                grade = pos.get("grade", "N/A")
-                is_ipo_discovery = (grade == "LISTING_BREAKOUT")
-                
-                if is_ipo_discovery:
-                    # IPO Discovery: Momentum is front-loaded. Cut faster!
-                    if days_held >= DEAD_MONEY_DAYS_IPO and new_max_runup < DEAD_MONEY_RUNUP_IPO:
-                        exit_reason = f"Time Stop - IPO Dead Money (No momentum after {DEAD_MONEY_DAYS_IPO} days)"
-                else:
-                    # Consolidation: Slightly longer leash
-                    if days_held >= DEAD_MONEY_DAYS_CONSOL and new_max_runup < DEAD_MONEY_RUNUP_CONSOL:
-                        exit_reason = f"Time Stop - Consolidation Dead Money (No momentum after {DEAD_MONEY_DAYS_CONSOL} days)"
-                
-                # Standard legacy time stops for minor losers (fallbacks)
-                if not exit_reason:
-                    if days_held > DEAD_MONEY_DAYS_OTHER and current_price < entry_price * 0.95:
-                        exit_reason = f"Time Stop -5% (Underperforming after {DEAD_MONEY_DAYS_OTHER} days)"
-                    elif days_held > 60 and current_price < entry_price * 0.92:
-                        exit_reason = "Time Stop -8% (Underperforming after 60 days)"
-
-            
-            if exit_reason:
-                # Outcome Classification
-                outcome_type = "NO_FOLLOW_THROUGH"
-                time_to_failure_days = None
-                time_to_failure_min = None
-                
-                if new_max_runup > 10.0 and days_held <= 5:
-                    outcome_type = "FAST_WINNER"
-                elif new_max_runup > 10.0 and days_held > 5:
-                    outcome_type = "SLOW_WINNER"
-                elif new_max_runup <= 3.0 and new_max_drawdown <= -3.0:
-                    outcome_type = "FAILED_BREAKOUT"
-                    time_to_failure_days = days_held
-                elif new_max_runup < 1.0 and exit_reason == "Stop Loss":
-                    outcome_type = "IMMEDIATE_FAILURE"
-                    time_to_failure_days = days_held
-                elif new_max_runup > 3.0 and new_max_runup <= 8.0:
-                    outcome_type = "NO_FOLLOW_THROUGH"
-                
-                holding_efficiency_pct = None
-                if new_max_runup >= 5.0:
-                    holding_efficiency_pct = round((pnl / new_max_runup) * 100.0, 2)
-
-                # Derived analytic metric for faster failure diagnostics (no strategy impact)
-                if time_to_failure_days is not None:
-                    time_to_failure_min = int(time_to_failure_days * 390)
+            # Manage real trade only if it is active in reality
+            if pos["status"] == "ACTIVE":
+                if current_price <= old_trailing:  # Use OLD trailing stop for exit check
+                    exit_reason = "Stop Loss"
+                elif not is_winner_archetype:
+                    # Archetype-sensitive dead-money speed gate (velocity threshold)
+                    grade = pos.get("grade", "N/A")
+                    is_ipo_discovery = (grade == "LISTING_BREAKOUT")
                     
-                # Close position - use current price (live or historical)
-                df_positions.loc[idx, ["status", "exit_date", "exit_price", "pnl_pct", "days_held", "max_runup_pct", "max_drawdown_pct", "outcome_type", "holding_efficiency_pct", "time_to_failure_days", "time_to_failure_min"]] = [
-                    "CLOSED", datetime.today().strftime("%Y-%m-%d"), current_price, pnl, days_held,
-                    new_max_runup, new_max_drawdown, outcome_type, holding_efficiency_pct, time_to_failure_days, time_to_failure_min
-                ]
-                close_active_signal(sym, current_price, pnl, days_held, exit_reason)
-                exits_triggered += 1
-                
-                # LOG: Position exit event — critical for month-end grade/exit-reason analysis
-                write_daily_log("positions", sym, "POSITION_CLOSED", {
-                    "exit_reason": exit_reason,
-                    "entry_price": round(entry_price, 2),
-                    "exit_price": round(current_price, 2),
-                    "pnl_pct": round(pnl, 2),
-                    "days_held": days_held,
-                    "grade": pos.get("grade", "?"),
-                    "price_source": price_source,
-                    "outcome_type": outcome_type,
-                    "max_runup_pct": round(new_max_runup, 2),
-                    "max_drawdown_pct": round(new_max_drawdown, 2),
-                    "time_to_failure_days": time_to_failure_days,
-                    "time_to_failure_min": time_to_failure_min,
-                    "runup_before_drawdown_pct": round(new_max_runup, 2) if new_max_drawdown < 0 else None,
-                })
-                
-                # Send exit alert
-                exit_msg = format_exit_alert(sym, exit_reason, current_price, pnl, days_held, entry_price)
-                exit_msg += f"\n\n📊 <b>Outcome:</b> {outcome_type} (Peak: +{new_max_runup:.1f}%)"
-                send_telegram(exit_msg)
+                    if is_ipo_discovery:
+                        # IPO Discovery: Momentum is front-loaded. Cut faster!
+                        if days_held >= DEAD_MONEY_DAYS_IPO and new_max_runup < DEAD_MONEY_RUNUP_IPO:
+                            exit_reason = f"Time Stop - IPO Dead Money (No momentum after {DEAD_MONEY_DAYS_IPO} days)"
+                    else:
+                        # Consolidation: Slightly longer leash
+                        if days_held >= DEAD_MONEY_DAYS_CONSOL and new_max_runup < DEAD_MONEY_RUNUP_CONSOL:
+                            exit_reason = f"Time Stop - Consolidation Dead Money (No momentum after {DEAD_MONEY_DAYS_CONSOL} days)"
+                    
+                    # Standard legacy time stops for minor losers (fallbacks)
+                    if not exit_reason:
+                        if days_held > DEAD_MONEY_DAYS_OTHER and current_price < entry_price * 0.95:
+                            exit_reason = f"Time Stop -5% (Underperforming after {DEAD_MONEY_DAYS_OTHER} days)"
+                        elif days_held > 60 and current_price < entry_price * 0.92:
+                            exit_reason = "Time Stop -8% (Underperforming after 60 days)"
 
-                # Persist closed position to DB (Critical Fix: was missing)
-                try:
-                    updated_pos = df_positions.loc[idx].to_dict()
-                    clean_pos = {}
-                    for k, v in updated_pos.items():
-                        try:
-                            if pd.isna(v): continue
-                        except:
-                            pass
-                        clean_pos[k] = v
-                    clean_pos["exit_reason"] = exit_reason
-                    clean_pos["outcome_type"] = outcome_type
-                    upsert_position(clean_pos)
-                except Exception as db_e:
-                    logger.error(f"Failed to persist position exit for {sym}: {db_e}")
-            else:
-                # Update position and (optionally) trail stop-loss
-                # Default: no change in trailing stop
-                new_trailing = float(old_trailing)
+                if exit_reason:
+                    # Outcome Classification
+                    outcome_type = "NO_FOLLOW_THROUGH"
+                    time_to_failure_days = None
+                    time_to_failure_min = None
+                    
+                    if new_max_runup > 10.0 and days_held <= 5:
+                        outcome_type = "FAST_WINNER"
+                    elif new_max_runup > 10.0 and days_held > 5:
+                        outcome_type = "SLOW_WINNER"
+                    elif new_max_runup <= 3.0 and new_max_drawdown <= -3.0:
+                        outcome_type = "FAILED_BREAKOUT"
+                        time_to_failure_days = days_held
+                    elif new_max_runup < 1.0 and exit_reason == "Stop Loss":
+                        outcome_type = "IMMEDIATE_FAILURE"
+                        time_to_failure_days = days_held
+                    elif new_max_runup > 3.0 and new_max_runup <= 8.0:
+                        outcome_type = "NO_FOLLOW_THROUGH"
+                    
+                    holding_efficiency_pct = None
+                    if new_max_runup >= 5.0:
+                        holding_efficiency_pct = round((pnl / new_max_runup) * 100.0, 2)
 
-                # Only start trailing once we have a reasonable profit cushion
-                if pnl >= MIN_PNL_FOR_TRAIL:
-                    # Calculate new candidate trailing stop from grade-based percentage
-                    grade = pos.get("grade", "C")  # Default to C if grade not available
-                    _, stop_pct = calculate_grade_based_stop_loss(entry_price, entry_price, grade)
-
-                    candidate_trailing = current_price * (1 - stop_pct)
-
-                    # Minimum absolute improvement required (as % of entry)
-                    min_trail_move_abs = entry_price * (MIN_TRAIL_MOVE_PCT / 100.0)
-
-                    if candidate_trailing > new_trailing and (candidate_trailing - new_trailing) >= min_trail_move_abs:
-                        new_trailing = candidate_trailing
-
-                # Persist updated position
-                df_positions.loc[idx, ["current_price", "trailing_stop", "pnl_pct", "days_held", "max_runup_pct", "max_drawdown_pct"]] = [
-                    current_price, new_trailing, pnl, days_held, new_max_runup, new_max_drawdown
-                ]
-
-                # LOG: Daily snapshot — every position every trading day (core dataset for tuning)
-                write_daily_log("positions", sym, "DAILY_SNAPSHOT", {
-                    "current_price": round(current_price, 2),
-                    "entry_price": round(entry_price, 2),
-                    "pnl_pct": round(pnl, 2),
-                    "trailing_stop": round(new_trailing, 2),
-                    "days_held": days_held,
-                    "grade": pos.get("grade", "?"),
-                    "price_source": price_source,
-                    "max_runup_pct": round(new_max_runup, 2),
-                    "max_drawdown_pct": round(new_max_drawdown, 2),
-                    "market_regime": get_market_regime(),
-                    "winner_label": pos.get("winner_label", "MISSING"),
-                    "exit_reason": None,
-                })
-
-                # Count only real trailing-stop improvements as "updates"
-                if new_trailing > old_trailing:
-                    updates_made += 1
-
-                    # LOG: Trailing stop improvement — key for understanding stop-protection quality
-                    write_daily_log("positions", sym, "TRAILING_STOP_UPDATED", {
-                        "old_stop": round(old_trailing, 2),
-                        "new_stop": round(new_trailing, 2),
-                        "current_price": round(current_price, 2),
+                    # Derived analytic metric for faster failure diagnostics (no strategy impact)
+                    if time_to_failure_days is not None:
+                        time_to_failure_min = int(time_to_failure_days * 390)
+                        
+                    # Close position - use current price (live or historical)
+                    df_positions.loc[idx, ["status", "exit_date", "exit_price", "pnl_pct", "days_held", "max_runup_pct", "max_drawdown_pct", "outcome_type", "holding_efficiency_pct", "time_to_failure_days", "time_to_failure_min"]] = [
+                        "CLOSED", datetime.today().strftime("%Y-%m-%d"), current_price, pnl, days_held,
+                        new_max_runup, new_max_drawdown, outcome_type, holding_efficiency_pct, time_to_failure_days, time_to_failure_min
+                    ]
+                    close_active_signal(sym, current_price, pnl, days_held, exit_reason)
+                    exits_triggered += 1
+                    
+                    # LOG: Position exit event — critical for month-end grade/exit-reason analysis
+                    write_daily_log("positions", sym, "POSITION_CLOSED", {
+                        "exit_reason": exit_reason,
+                        "entry_price": round(entry_price, 2),
+                        "exit_price": round(current_price, 2),
                         "pnl_pct": round(pnl, 2),
                         "days_held": days_held,
-                        "grade": pos.get("grade", "?")
+                        "grade": pos.get("grade", "?"),
+                        "price_source": price_source,
+                        "outcome_type": outcome_type,
+                        "max_runup_pct": round(new_max_runup, 2),
+                        "max_drawdown_pct": round(new_max_drawdown, 2),
+                        "time_to_failure_days": time_to_failure_days,
+                        "time_to_failure_min": time_to_failure_min,
+                        "runup_before_drawdown_pct": round(new_max_runup, 2) if new_max_drawdown < 0 else None,
+                    })
+                    
+                    # Send exit alert
+                    exit_msg = format_exit_alert(sym, exit_reason, current_price, pnl, days_held, entry_price)
+                    exit_msg += f"\n\n📊 <b>Outcome:</b> {outcome_type} (Peak: +{new_max_runup:.1f}%)"
+                    send_telegram(exit_msg)
+
+                    # Persist closed position to DB
+                    try:
+                        updated_pos = df_positions.loc[idx].to_dict()
+                        clean_pos = {}
+                        for k, v in updated_pos.items():
+                            try:
+                                if pd.isna(v): continue
+                            except:
+                                pass
+                            clean_pos[k] = v
+                        clean_pos["exit_reason"] = exit_reason
+                        clean_pos["outcome_type"] = outcome_type
+                        upsert_position(clean_pos)
+                    except Exception as db_e:
+                        logger.error(f"Failed to persist position exit for {sym}: {db_e}")
+                else:
+                    # Update position and (optionally) trail stop-loss
+                    # Only start trailing once we have a reasonable profit cushion
+                    if pnl >= MIN_PNL_FOR_TRAIL:
+                        # Calculate new candidate trailing stop from grade-based percentage
+                        grade = pos.get("grade", "C")  # Default to C if grade not available
+                        _, stop_pct = calculate_grade_based_stop_loss(entry_price, entry_price, grade)
+
+                        candidate_trailing = current_price * (1 - stop_pct)
+
+                        # Minimum absolute improvement required (as % of entry)
+                        min_trail_move_abs = entry_price * (MIN_TRAIL_MOVE_PCT / 100.0)
+
+                        if candidate_trailing > new_trailing and (candidate_trailing - new_trailing) >= min_trail_move_abs:
+                            new_trailing = candidate_trailing
+
+                    # Persist updated position
+                    df_positions.loc[idx, ["current_price", "trailing_stop", "pnl_pct", "days_held", "max_runup_pct", "max_drawdown_pct"]] = [
+                        current_price, new_trailing, pnl, days_held, new_max_runup, new_max_drawdown
+                    ]
+
+                    # LOG: Daily snapshot — every position every trading day (core dataset for tuning)
+                    write_daily_log("positions", sym, "DAILY_SNAPSHOT", {
+                        "current_price": round(current_price, 2),
+                        "entry_price": round(entry_price, 2),
+                        "pnl_pct": round(pnl, 2),
+                        "trailing_stop": round(new_trailing, 2),
+                        "days_held": days_held,
+                        "grade": pos.get("grade", "?"),
+                        "price_source": price_source,
+                        "max_runup_pct": round(new_max_runup, 2),
+                        "max_drawdown_pct": round(new_max_drawdown, 2),
+                        "market_regime": current_regime,
+                        "winner_label": pos.get("winner_label", "MISSING"),
+                        "exit_reason": None,
                     })
 
-                    # Send position update alert only when stop-loss actually moves
-                    update_msg = format_position_update_alert(
-                        sym, current_price, entry_price, old_trailing, new_trailing, pnl, days_held, grade
-                    )
-                    send_telegram(update_msg)
+                    # Count only real trailing-stop improvements as "updates"
+                    if new_trailing > old_trailing:
+                        updates_made += 1
 
-                # Persist to DB (Critical Fix: was missing)
-                try:
-                    updated_pos = df_positions.loc[idx].to_dict()
-                    # Clean up for MongoDB (remove NaN/None if any)
-                    # Use a safer check that works with scalars and arrays
-                    clean_pos = {}
-                    for k, v in updated_pos.items():
-                        try:
-                            if pd.isna(v): continue
-                        except:
-                            pass # If v is an array, keep it
-                        clean_pos[k] = v
-                    upsert_position(clean_pos)
-                except Exception as db_e:
-                    logger.error(f"Failed to persist position update for {sym}: {db_e}")
+                        # LOG: Trailing stop improvement — key for understanding stop-protection quality
+                        write_daily_log("positions", sym, "TRAILING_STOP_UPDATED", {
+                            "old_stop": round(old_trailing, 2),
+                            "new_stop": round(new_trailing, 2),
+                            "current_price": round(current_price, 2),
+                            "pnl_pct": round(pnl, 2),
+                            "days_held": days_held,
+                            "grade": pos.get("grade", "?")
+                        })
+
+                        # Send position update alert only when stop-loss actually moves
+                        update_msg = format_position_update_alert(
+                            sym, current_price, entry_price, old_trailing, new_trailing, pnl, days_held, grade
+                        )
+                        send_telegram(update_msg)
+
+                    # Persist to DB (Critical Fix: was missing)
+                    try:
+                        updated_pos = df_positions.loc[idx].to_dict()
+                        clean_pos = {}
+                        for k, v in updated_pos.items():
+                            try:
+                                if pd.isna(v): continue
+                            except:
+                                pass # If v is an array, keep it
+                            clean_pos[k] = v
+                        upsert_position(clean_pos)
+                    except Exception as db_e:
+                        logger.error(f"Failed to persist position update for {sym}: {db_e}")
+
+            # --- SHADOW STOP LOSS TRACKING LOGIC ---
+            # Extract current shadow fields (with robust fallbacks)
+            shadow_sl_8 = pos.get("shadow_sl_8pct")
+            if shadow_sl_8 is None or pd.isna(shadow_sl_8):
+                shadow_sl_8 = round(entry_price * 0.92, 2)
+            
+            shadow_sl_10 = pos.get("shadow_sl_10pct")
+            if shadow_sl_10 is None or pd.isna(shadow_sl_10):
+                shadow_sl_10 = round(entry_price * 0.90, 2)
+                
+            shadow_sl_12 = pos.get("shadow_sl_12pct")
+            if shadow_sl_12 is None or pd.isna(shadow_sl_12):
+                shadow_sl_12 = round(entry_price * 0.88, 2)
+                
+            shadow_status_8 = pos.get("shadow_status_8pct")
+            if shadow_status_8 is None or pd.isna(shadow_status_8) or shadow_status_8 == "nan" or shadow_status_8 == "":
+                shadow_status_8 = "ACTIVE" if pos["status"] == "ACTIVE" else "CLOSED"
+            
+            shadow_status_10 = pos.get("shadow_status_10pct")
+            if shadow_status_10 is None or pd.isna(shadow_status_10) or shadow_status_10 == "nan" or shadow_status_10 == "":
+                shadow_status_10 = "ACTIVE" if pos["status"] == "ACTIVE" else "CLOSED"
+                
+            shadow_status_12 = pos.get("shadow_status_12pct")
+            if shadow_status_12 is None or pd.isna(shadow_status_12) or shadow_status_12 == "nan" or shadow_status_12 == "":
+                shadow_status_12 = "ACTIVE" if pos["status"] == "ACTIVE" else "CLOSED"
+            
+            # Ensure they are strings
+            shadow_status_8 = str(shadow_status_8) if not pd.isna(shadow_status_8) else "CLOSED"
+            shadow_status_10 = str(shadow_status_10) if not pd.isna(shadow_status_10) else "CLOSED"
+            shadow_status_12 = str(shadow_status_12) if not pd.isna(shadow_status_12) else "CLOSED"
+            
+            shadow_exit_price_8 = pos.get("shadow_exit_price_8pct")
+            shadow_exit_price_10 = pos.get("shadow_exit_price_10pct")
+            shadow_exit_price_12 = pos.get("shadow_exit_price_12pct")
+            
+            shadow_exit_date_8 = pos.get("shadow_exit_date_8pct")
+            shadow_exit_date_10 = pos.get("shadow_exit_date_10pct")
+            shadow_exit_date_12 = pos.get("shadow_exit_date_12pct")
+            
+            shadow_exit_reason_8 = pos.get("shadow_exit_reason_8pct")
+            shadow_exit_reason_10 = pos.get("shadow_exit_reason_10pct")
+            shadow_exit_reason_12 = pos.get("shadow_exit_reason_12pct")
+            
+            # Convert NaN to None for db safety
+            def clean_nan(val):
+                return None if pd.isna(val) else val
+            shadow_exit_price_8 = clean_nan(shadow_exit_price_8)
+            shadow_exit_price_10 = clean_nan(shadow_exit_price_10)
+            shadow_exit_price_12 = clean_nan(shadow_exit_price_12)
+            shadow_exit_date_8 = clean_nan(shadow_exit_date_8)
+            shadow_exit_date_10 = clean_nan(shadow_exit_date_10)
+            shadow_exit_date_12 = clean_nan(shadow_exit_date_12)
+            shadow_exit_reason_8 = clean_nan(shadow_exit_reason_8)
+            shadow_exit_reason_10 = clean_nan(shadow_exit_reason_10)
+            shadow_exit_reason_12 = clean_nan(shadow_exit_reason_12)
+
+            today_str = datetime.today().strftime("%Y-%m-%d")
+            
+            # Check independent shadow time-stop rule
+            grade = pos.get("grade", "N/A")
+            is_ipo_discovery = (grade == "LISTING_BREAKOUT")
+            shadow_time_stop_reason = None
+            
+            if is_ipo_discovery:
+                if days_held >= DEAD_MONEY_DAYS_IPO and new_max_runup < DEAD_MONEY_RUNUP_IPO:
+                    shadow_time_stop_reason = f"Time Stop - IPO Dead Money (No momentum after {DEAD_MONEY_DAYS_IPO} days)"
+            else:
+                if days_held >= DEAD_MONEY_DAYS_CONSOL and new_max_runup < DEAD_MONEY_RUNUP_CONSOL:
+                    shadow_time_stop_reason = f"Time Stop - Consolidation Dead Money (No momentum after {DEAD_MONEY_DAYS_CONSOL} days)"
+            
+            if not shadow_time_stop_reason:
+                if days_held > DEAD_MONEY_DAYS_OTHER and current_price < entry_price * 0.95:
+                    shadow_time_stop_reason = f"Time Stop -5% (Underperforming after {DEAD_MONEY_DAYS_OTHER} days)"
+                elif days_held > 60 and current_price < entry_price * 0.92:
+                    shadow_time_stop_reason = "Time Stop -8% (Underperforming after 60 days)"
+
+            shadow_closed_messages = []
+            # Option A: Trail shadow stop losses infinitely based on peak price today
+            peak_price = entry_price * (1 + new_max_runup / 100.0)
+            
+            if shadow_status_8 == "ACTIVE":
+                candidate_sl_8 = round(peak_price * 0.92, 2)
+                if candidate_sl_8 > shadow_sl_8:
+                    shadow_sl_8 = candidate_sl_8
+                    
+            if shadow_status_10 == "ACTIVE":
+                candidate_sl_10 = round(peak_price * 0.90, 2)
+                if candidate_sl_10 > shadow_sl_10:
+                    shadow_sl_10 = candidate_sl_10
+                    
+            if shadow_status_12 == "ACTIVE":
+                candidate_sl_12 = round(peak_price * 0.88, 2)
+                if candidate_sl_12 > shadow_sl_12:
+                    shadow_sl_12 = candidate_sl_12
+            
+            # Evaluate 8% Shadow SL
+            if shadow_status_8 == "ACTIVE":
+                if current_price <= shadow_sl_8:
+                    shadow_status_8 = "CLOSED"
+                    shadow_exit_price_8 = round(current_price, 2)
+                    shadow_exit_date_8 = today_str
+                    shadow_exit_reason_8 = "Stop Loss"
+                    shadow_closed_messages.append(f"• 8% Shadow SL: CLOSED (Stop Loss at ₹{shadow_exit_price_8:.2f})")
+                elif exit_reason and "Time Stop" in exit_reason:
+                    shadow_status_8 = "CLOSED"
+                    shadow_exit_price_8 = round(current_price, 2)
+                    shadow_exit_date_8 = today_str
+                    shadow_exit_reason_8 = exit_reason
+                    shadow_closed_messages.append(f"• 8% Shadow SL: CLOSED ({exit_reason} at ₹{shadow_exit_price_8:.2f})")
+                elif shadow_time_stop_reason:
+                    shadow_status_8 = "CLOSED"
+                    shadow_exit_price_8 = round(current_price, 2)
+                    shadow_exit_date_8 = today_str
+                    shadow_exit_reason_8 = shadow_time_stop_reason
+                    shadow_closed_messages.append(f"• 8% Shadow SL: CLOSED ({shadow_time_stop_reason} at ₹{shadow_exit_price_8:.2f})")
+
+            # Evaluate 10% Shadow SL
+            if shadow_status_10 == "ACTIVE":
+                if current_price <= shadow_sl_10:
+                    shadow_status_10 = "CLOSED"
+                    shadow_exit_price_10 = round(current_price, 2)
+                    shadow_exit_date_10 = today_str
+                    shadow_exit_reason_10 = "Stop Loss"
+                    shadow_closed_messages.append(f"• 10% Shadow SL: CLOSED (Stop Loss at ₹{shadow_exit_price_10:.2f})")
+                elif exit_reason and "Time Stop" in exit_reason:
+                    shadow_status_10 = "CLOSED"
+                    shadow_exit_price_10 = round(current_price, 2)
+                    shadow_exit_date_10 = today_str
+                    shadow_exit_reason_10 = exit_reason
+                    shadow_closed_messages.append(f"• 10% Shadow SL: CLOSED ({exit_reason} at ₹{shadow_exit_price_10:.2f})")
+                elif shadow_time_stop_reason:
+                    shadow_status_10 = "CLOSED"
+                    shadow_exit_price_10 = round(current_price, 2)
+                    shadow_exit_date_10 = today_str
+                    shadow_exit_reason_10 = shadow_time_stop_reason
+                    shadow_closed_messages.append(f"• 10% Shadow SL: CLOSED ({shadow_time_stop_reason} at ₹{shadow_exit_price_10:.2f})")
+
+            # Evaluate 12% Shadow SL
+            if shadow_status_12 == "ACTIVE":
+                if current_price <= shadow_sl_12:
+                    shadow_status_12 = "CLOSED"
+                    shadow_exit_price_12 = round(current_price, 2)
+                    shadow_exit_date_12 = today_str
+                    shadow_exit_reason_12 = "Stop Loss"
+                    shadow_closed_messages.append(f"• 12% Shadow SL: CLOSED (Stop Loss at ₹{shadow_exit_price_12:.2f})")
+                elif exit_reason and "Time Stop" in exit_reason:
+                    shadow_status_12 = "CLOSED"
+                    shadow_exit_price_12 = round(current_price, 2)
+                    shadow_exit_date_12 = today_str
+                    shadow_exit_reason_12 = exit_reason
+                    shadow_closed_messages.append(f"• 12% Shadow SL: CLOSED ({exit_reason} at ₹{shadow_exit_price_12:.2f})")
+                elif shadow_time_stop_reason:
+                    shadow_status_12 = "CLOSED"
+                    shadow_exit_price_12 = round(current_price, 2)
+                    shadow_exit_date_12 = today_str
+                    shadow_exit_reason_12 = shadow_time_stop_reason
+                    shadow_closed_messages.append(f"• 12% Shadow SL: CLOSED ({shadow_time_stop_reason} at ₹{shadow_exit_price_12:.2f})")
+
+            if shadow_closed_messages:
+                shadow_alert = f"👥 <b>Shadow SL Exit Alert: {sym}</b>\n\n" + "\n".join(shadow_closed_messages) + f"\n\n💰 Entry: ₹{entry_price:.2f} | Current: ₹{current_price:.2f}"
+                send_telegram(shadow_alert)
+                
+            # Assign shadow variables to DataFrame row for persistence
+            shadow_fields = {
+                "shadow_sl_8pct": shadow_sl_8,
+                "shadow_sl_10pct": shadow_sl_10,
+                "shadow_sl_12pct": shadow_sl_12,
+                "shadow_status_8pct": shadow_status_8,
+                "shadow_status_10pct": shadow_status_10,
+                "shadow_status_12pct": shadow_status_12,
+                "shadow_exit_price_8pct": shadow_exit_price_8,
+                "shadow_exit_price_10pct": shadow_exit_price_10,
+                "shadow_exit_price_12pct": shadow_exit_price_12,
+                "shadow_exit_date_8pct": shadow_exit_date_8,
+                "shadow_exit_date_10pct": shadow_exit_date_10,
+                "shadow_exit_date_12pct": shadow_exit_date_12,
+                "shadow_exit_reason_8pct": shadow_exit_reason_8,
+                "shadow_exit_reason_10pct": shadow_exit_reason_10,
+                "shadow_exit_reason_12pct": shadow_exit_reason_12
+            }
+            
+            for field_name, field_val in shadow_fields.items():
+                df_positions.loc[idx, field_name] = field_val
+                
+            # Persist all updates (including shadow fields) to DB
+            try:
+                updated_pos = df_positions.loc[idx].to_dict()
+                clean_pos = {}
+                for k, v in updated_pos.items():
+                    try:
+                        if pd.isna(v): continue
+                    except:
+                        pass
+                    clean_pos[k] = v
+                upsert_position(clean_pos)
+            except Exception as db_e:
+                logger.error(f"Failed to persist final update for {sym}: {db_e}")
         except Exception as e:
             logger.error(f"Error updating {sym}: {e}")
             failed_updates.append(sym)

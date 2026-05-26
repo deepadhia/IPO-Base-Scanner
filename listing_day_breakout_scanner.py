@@ -1907,7 +1907,23 @@ def add_position(breakout_data):
             "market_regime": _mr,
             "strategy_version": "2.5.0-listing-day",
             "execution_version": "2.5.0-single-writer",
-            "risk_model_version": "2.5.0-archetype-velocity"
+            "risk_model_version": "2.5.0-archetype-velocity",
+            # Shadow SL tracking fields
+            "shadow_sl_8pct": round(breakout_data['entry_price'] * 0.92, 2),
+            "shadow_sl_10pct": round(breakout_data['entry_price'] * 0.90, 2),
+            "shadow_sl_12pct": round(breakout_data['entry_price'] * 0.88, 2),
+            "shadow_status_8pct": "ACTIVE",
+            "shadow_status_10pct": "ACTIVE",
+            "shadow_status_12pct": "ACTIVE",
+            "shadow_exit_price_8pct": None,
+            "shadow_exit_price_10pct": None,
+            "shadow_exit_price_12pct": None,
+            "shadow_exit_date_8pct": None,
+            "shadow_exit_date_10pct": None,
+            "shadow_exit_date_12pct": None,
+            "shadow_exit_reason_8pct": None,
+            "shadow_exit_reason_10pct": None,
+            "shadow_exit_reason_12pct": None
         }
         
         # DB-only write: position

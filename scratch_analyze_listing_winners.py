@@ -1,107 +1,73 @@
-from db import signals_col, positions_col
+from db import signals_col
 import pandas as pd
 import numpy as np
 
 # Load all signals
-all_sigs = list(signals_col.find({}, {"_id": 0}))
+all_sigs = list(signals_col.find({"grade": "LISTING_BREAKOUT"}, {"_id": 0}))
 df = pd.DataFrame(all_sigs)
 
 if df.empty:
-    print("No signals found!")
+    print("No LISTING_BREAKOUT signals found!")
     exit(1)
 
-# Ensure numeric types
+# Enforce proper types
 df["pnl_pct"] = pd.to_numeric(df.get("pnl_pct", 0), errors="coerce").fillna(0)
-df["volume_ratio"] = pd.to_numeric(df.get("volume_ratio", np.nan), errors="coerce")
-df["consolidation_range_pct"] = pd.to_numeric(df.get("consolidation_range_pct", np.nan), errors="coerce")
-df["market_cap_cr"] = pd.to_numeric(df.get("market_cap_cr", np.nan), errors="coerce")
 df["entry_price"] = pd.to_numeric(df.get("entry_price", np.nan), errors="coerce")
-df["score"] = pd.to_numeric(df.get("score", np.nan), errors="coerce")
+df["w"] = df["metrics"].apply(lambda m: float(m.get("w", np.nan)) if isinstance(m, dict) else np.nan)
+df["market_regime"] = df["market_regime"].fillna("UNKNOWN")
 
-# Filter for Listing Day / IPO Discovery signals
-# These are tagged with grade == "LISTING_BREAKOUT" or signal_type == "LISTING_DAY_BREAKOUT" or scanner == "listing_day"
-df_list = df[
-    (df["grade"] == "LISTING_BREAKOUT") | 
-    (df["signal_type"] == "LISTING_DAY_BREAKOUT") | 
-    (df["scanner"] == "listing_day")
-].copy()
+closed_df = df[df["status"] == "CLOSED"].copy()
+super_winners = closed_df[closed_df["pnl_pct"] >= 20.0].copy()
 
-print(f"Total Listing Day Breakout Signals: {len(df_list)}")
+print(f"Total Closed Signals: {len(closed_df)}")
+print(f"Total Super Winners: {len(super_winners)}")
 
-# Inspect OMNI specifically
-df_omni = df[df["symbol"] == "OMNI"]
-if not df_omni.empty:
-    print("\n=== OMNI SIGNAL PROFILE ===")
-    for idx, row in df_omni.iterrows():
-        print(f"Symbol: {row.get('symbol')} | PnL: {row.get('pnl_pct'):+.2f}% | Status: {row.get('status')}")
-        print(f"  Signal Date : {row.get('signal_date')} | Time: {row.get('signal_time')}")
-        print(f"  Entry Price : {row.get('entry_price')} | Stop Loss: {row.get('stop_loss')} | Target: {row.get('target_price')}")
-        print(f"  Vol Ratio   : {row.get('volume_ratio')} | Base Range: {row.get('consolidation_range_pct')}%")
-        print(f"  Market Cap  : {row.get('market_cap_cr')} Cr | Nifty Slope: {row.get('nifty_trend_slope')}")
-        print(f"  Regime      : {row.get('market_regime')} | Score: {row.get('score')} | Leader Score: {row.get('leader_score')}")
-        print(f"  Notes       : {row.get('notes') or row.get('entry_note')}")
-else:
-    print("\n[Warn] OMNI not found in signals collection.")
+# 1. Test Filter: Market Regime in BULL / CORRECTION
+print("\n=== FILTER TEST 1: Market Regime in [BULL, CORRECTION] ===")
+f1 = closed_df[closed_df["market_regime"].isin(["BULL", "CORRECTION"])]
+w1 = f1[f1["pnl_pct"] > 0]
+sw1 = f1[f1["pnl_pct"] >= 20.0]
+print(f"Trades Taken : {len(f1)} / {len(closed_df)} ({len(f1)/len(closed_df)*100:.1f}%)")
+print(f"Win Rate     : {len(w1)/len(f1)*100:.1f}%")
+print(f"Avg PnL      : {f1['pnl_pct'].mean():+.2f}%")
+print(f"Super Winners: {len(sw1)} / {len(super_winners)} ({len(sw1)/len(super_winners)*100:.1f}%)")
 
-# Let's segregate Listing Day breakouts into:
-# 1. Super Winners (PnL > 25%)
-# 2. Average/Losing setups (PnL <= 0% and CLOSED)
-super_winners = df_list[df_list["pnl_pct"] > 25.0].copy()
-losers = df_list[(df_list["pnl_pct"] <= 0.0) & (df_list["status"] == "CLOSED")].copy()
+# 2. Test Filter: Entry Price >= 150
+print("\n=== FILTER TEST 2: Nominal Entry Price >= 150 ===")
+f2 = closed_df[closed_df["entry_price"] >= 150.0]
+w2 = f2[f2["pnl_pct"] > 0]
+sw2 = f2[f2["pnl_pct"] >= 20.0]
+print(f"Trades Taken : {len(f2)} / {len(closed_df)} ({len(f2)/len(closed_df)*100:.1f}%)")
+print(f"Win Rate     : {len(w2)/len(f2)*100:.1f}%")
+print(f"Avg PnL      : {f2['pnl_pct'].mean():+.2f}%")
+print(f"Super Winners: {len(sw2)} / {len(super_winners)} ({len(sw2)/len(super_winners)*100:.1f}%)")
 
-print(f"\n=== COMPARATIVE STUDY ===")
-print(f"Super Winners (PnL > 25%) : {len(super_winners)}")
-print(f"Concluded Losers (PnL <= 0%) : {len(losers)}")
+# 3. Test Filter: Breakout Age w <= 15
+print("\n=== FILTER TEST 3: Breakout Age (w) <= 15 days ===")
+f3 = closed_df[closed_df["w"] <= 15.0]
+w3 = f3[f3["pnl_pct"] > 0]
+sw3 = f3[f3["pnl_pct"] >= 20.0]
+print(f"Trades Taken : {len(f3)} / {len(closed_df)} ({len(f3)/len(closed_df)*100:.1f}%)")
+print(f"Win Rate     : {len(w3)/len(f3)*100:.1f}%")
+print(f"Avg PnL      : {f3['pnl_pct'].mean():+.2f}%")
+print(f"Super Winners: {len(sw3)} / {len(super_winners)} ({len(sw3)/len(super_winners)*100:.1f}%)")
 
-def print_metric_comparison(col_name, label):
-    if col_name in df_list.columns:
-        w_vals = super_winners[col_name].dropna()
-        l_vals = losers[col_name].dropna()
-        
-        w_mean = w_vals.mean() if not w_vals.empty else np.nan
-        l_mean = l_vals.mean() if not l_vals.empty else np.nan
-        
-        w_str = f"{w_mean:.4f}" if isinstance(w_mean, (float, int)) and not pd.isna(w_mean) else str(w_mean)
-        l_str = f"{l_mean:.4f}" if isinstance(l_mean, (float, int)) and not pd.isna(l_mean) else str(l_mean)
-        
-        print(f"\n* {label} ({col_name}):")
-        print(f"  - Super Winners Mean : {w_str}")
-        print(f"  - Losers Mean        : {l_str}")
-        if not w_vals.empty and not l_vals.empty and not pd.isna(w_mean) and not pd.isna(l_mean):
-            diff = w_mean - l_mean
-            sign = "higher" if diff > 0 else "lower"
-            print(f"  → Difference: {abs(diff):.4f} ({sign} in Super Winners)")
+# 4. Joint Filter: Regime [BULL, CORRECTION] AND Entry Price >= 150 AND Age <= 15
+print("\n=== JOINT FILTER: REGIME + PRICE >= 150 + AGE <= 15 ===")
+f4 = closed_df[
+    (closed_df["market_regime"].isin(["BULL", "CORRECTION"])) &
+    (closed_df["entry_price"] >= 150.0) &
+    (closed_df["w"] <= 15.0)
+]
+w4 = f4[f4["pnl_pct"] > 0]
+sw4 = f4[f4["pnl_pct"] >= 20.0]
+print(f"Trades Taken : {len(f4)} / {len(closed_df)} ({len(f4)/len(closed_df)*100:.1f}%)")
+print(f"Win Rate     : {len(w4)/len(f4)*100:.1f}%")
+print(f"Avg PnL      : {f4['pnl_pct'].mean():+.2f}%")
+print(f"Super Winners: {len(sw4)} / {len(super_winners)} ({len(sw4)/len(super_winners)*100:.1f}%)")
 
-print_metric_comparison("volume_ratio", "Volume Ratio at Breakout")
-print_metric_comparison("consolidation_range_pct", "Consolidation Base Range %")
-print_metric_comparison("market_cap_cr", "Market Capitalization (Cr)")
-print_metric_comparison("score", "Scanner Match Score (out of 5)")
-print_metric_comparison("leader_score", "Listing Day Leader Score")
-
-# Let's inspect Nifty Trend Slope & Regime distributions
-if "market_regime" in df_list.columns:
-    print("\n* Market Regime Distribution:")
-    print("  Super Winners:")
-    w_reg = super_winners["market_regime"].value_counts(normalize=True) * 100
-    for reg, pct in w_reg.items():
-        print(f"    - {reg:<12} : {pct:.1f}% ({super_winners['market_regime'].value_counts()[reg]} trades)")
-    
-    print("  Losers:")
-    l_reg = losers["market_regime"].value_counts(normalize=True) * 100
-    for reg, pct in l_reg.items():
-        print(f"    - {reg:<12} : {pct:.1f}% ({losers['market_regime'].value_counts()[reg]} trades)")
-
-if "nifty_trend_slope" in df_list.columns:
-    df_list["nifty_trend_slope"] = pd.to_numeric(df_list["nifty_trend_slope"], errors="coerce")
-    super_winners["nifty_trend_slope"] = pd.to_numeric(super_winners["nifty_trend_slope"], errors="coerce")
-    losers["nifty_trend_slope"] = pd.to_numeric(losers["nifty_trend_slope"], errors="coerce")
-    
-    print("\n* Nifty Trend Slope at Breakout:")
-    print(f"  - Super Winners Mean : {super_winners['nifty_trend_slope'].mean():.6f}")
-    print(f"  - Losers Mean        : {losers['nifty_trend_slope'].mean():.6f}")
-
-# Sample study of specific columns in Super Winners to see if we can find any absolute invariants
-print("\n=== TOP 10 INDIVIDUAL SUPER WINNERS DETAILS ===")
-cols_to_show = ["symbol", "pnl_pct", "signal_date", "market_regime", "market_cap_cr", "volume_ratio", "leader_score"]
-existing_cols = [c for c in cols_to_show if c in df_list.columns]
-print(super_winners.sort_values("pnl_pct", ascending=False)[existing_cols].head(15).to_string(index=False))
+# 5. Joint Filter with wider 12% Stop Loss simulation
+# Since we didn't change the database records, how would a 12% SL look under this joint filter?
+# Let's write a simple simulation: if original pnl_pct < 0, let's see if widening the SL would have saved it.
+# Actually, the 12% simulation from before was already run. Let's see what happens if we just use the joint filter on the 12% SL simulation results!
+# Let's inspect the results we have.
