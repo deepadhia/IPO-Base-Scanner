@@ -3410,10 +3410,22 @@ def stop_loss_update_scan():
     df_positions["max_drawdown_pct"] = df_positions["max_drawdown_pct"].fillna(0.0)
     
     active_positions_all = df_positions
-    # Initialize shadow status columns if they do not exist
-    for col in ["shadow_status_8pct", "shadow_status_10pct", "shadow_status_12pct"]:
+    # Initialize shadow status and metadata columns to avoid pandas dtype warnings
+    shadow_string_cols = [
+        "shadow_status_8pct", "shadow_status_10pct", "shadow_status_12pct",
+        "shadow_exit_date_8pct", "shadow_exit_date_10pct", "shadow_exit_date_12pct",
+        "shadow_exit_reason_8pct", "shadow_exit_reason_10pct", "shadow_exit_reason_12pct"
+    ]
+    for col in shadow_string_cols:
         if col not in active_positions_all.columns:
-            active_positions_all[col] = active_positions_all["status"].apply(lambda s: "ACTIVE" if s == "ACTIVE" else "CLOSED")
+            active_positions_all[col] = None
+        active_positions_all[col] = active_positions_all[col].astype(object)
+        
+    for col in ["shadow_status_8pct", "shadow_status_10pct", "shadow_status_12pct"]:
+        # Use series assignment to avoid deprecation warnings
+        active_positions_all[col] = active_positions_all[col].fillna(
+            active_positions_all["status"].apply(lambda s: "ACTIVE" if s == "ACTIVE" else "CLOSED")
+        )
             
     # Find active or shadow-active positions
     def is_shadow_active(pos_row):
