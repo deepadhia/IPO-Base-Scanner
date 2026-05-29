@@ -1702,6 +1702,7 @@ def save_breakout_signal(breakout_data):
             "stop_loss": breakout_data['stop_loss'],
             "target_price": breakout_data['target_price'],
             "status": "ACTIVE" if not portfolio_full else "PAPER_ONLY",
+            "next_day_open": None,
             "exit_date": "",
             "exit_price": 0,
             "pnl_pct": 0,
@@ -1891,8 +1892,11 @@ def add_position(breakout_data):
         _mr = get_market_regime(today)
         size_mult = scanner_module.REGIME_SIZE_MULT.get(_mr, 0.5)
         
+        signal_id = f"LISTING_{breakout_data['symbol']}_{today.strftime('%Y%m%d')}"
+        
         # Create new position
         new_position = {
+            "signal_id": signal_id,
             "symbol": breakout_data['symbol'],
             "entry_date": today,
             "entry_price": breakout_data['entry_price'],
@@ -1903,6 +1907,7 @@ def add_position(breakout_data):
             "pnl_pct": 0,
             "days_held": 0,
             "status": "ACTIVE",
+            "next_day_open": None,
             "position_size_weight": size_mult,
             "market_regime": _mr,
             "strategy_version": "2.5.0-listing-day",
