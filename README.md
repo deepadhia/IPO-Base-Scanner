@@ -81,6 +81,16 @@ To maximize capital velocity and prevent capital from getting locked in flat bre
 * **IPO Discovery Breakouts (`grade == "LISTING_BREAKOUT"`):** If held for $\ge 12$ trading days and peak runup has never reached $\ge 4\%$, it is closed at the market with exit reason `"Time Stop - IPO Dead Money"`.
 * **Consolidation Breakouts:** If held for $\ge 21$ trading days and peak runup has never reached $\ge 5\%$, it is closed at the market with exit reason `"Time Stop - Consolidation Dead Money"`.
 
+### 4. Market Regime Stabilizer (3-Day Confirmation)
+To prevent whipsaws during market transitions, Nifty-based regimes are stabilized chronologically:
+* **Stabilization Rule:** A new market regime classification is only confirmed and applied if it persists for **3 consecutive trading days**.
+* **Effect:** This time-based filter reduces regime whipsaws in backtests from **72.0% to 7.9%**, establishing a highly stable filter context.
+
+### 5. Forward-Testing Execution Baseline (Option A - Market on Open)
+To ensure 100% fill certainty during the 1-2 month paper test and eliminate execution uncertainty:
+* **Execution Rule:** Trades are simulated as entering at the **Next-Trading-Day Open** (`next_day_open`) rather than the breakout close.
+* **Telemetry Fields:** The scanner tracks both `breakout_close` (reference price) and `next_day_open` (execution price) in MongoDB signals and positions collections to audit slippage and compute true expectancy.
+
 ---
 
 ## 🚫 Rejection Logic (Critical Filters)

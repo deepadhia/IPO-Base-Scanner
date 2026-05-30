@@ -305,11 +305,75 @@ def get_market_regime(target_date=None):
         if df_nifty is None or df_nifty.empty:
             return "UNKNOWN"
             
-        # Reset index if MultiIndex columns exist
-        df_nifty.columns = [c[0] if isinstance(c, tuple) else c for c in df_nifty.columns]
-        df_nifty.columns = [str(c).capitalize() for c in df_nifty.columns]
+        # 1. Reset index if MultiIndex columns or if index name contains 'date' or is type DatetimeIndex
+        if isinstance(df_nifty.columns, pd.MultiIndex):
+            df_nifty.columns = [c[0] for c in df_nifty.columns]
+            
+        index_name = df_nifty.index.name
+        is_date_index = False
+        if index_name and 'date' in str(index_name).lower():
+            is_date_index = True
+        elif isinstance(df_nifty.index, pd.DatetimeIndex):
+            is_date_index = True
+            
+        if is_date_index:
+            df_nifty = df_nifty.reset_index()
+            
+        # 2. Identify the date column
+        # Preference:
+        # a. Exact case-insensitive match for 'date'
+        # b. A single column containing 'date'
+        # Otherwise raise ValueError
+        cols = list(df_nifty.columns)
+        date_col = None
         
-        df_nifty = df_nifty.sort_values("Date").reset_index(drop=True)
+        exact_matches = [c for c in cols if str(c).lower() == 'date']
+        if len(exact_matches) == 1:
+            date_col = exact_matches[0]
+        elif len(exact_matches) > 1:
+            raise ValueError(f"Ambiguous date columns (multiple exact case-insensitive matches): {exact_matches}")
+        else:
+            contains_matches = [c for c in cols if 'date' in str(c).lower()]
+            if len(contains_matches) == 1:
+                date_col = contains_matches[0]
+            elif len(contains_matches) > 1:
+                raise ValueError(f"Ambiguous date columns (multiple columns containing 'date'): {contains_matches}")
+                
+        if not date_col:
+            raise ValueError(f"Could not find any date column in Nifty DataFrame. Columns: {cols}")
+            
+        # Rename identified date column to 'Date'
+        df_nifty = df_nifty.rename(columns={date_col: 'Date'})
+        
+        # 3. Standardize other key columns: Open, High, Low, Close, Volume
+        key_mapping = {}
+        for col in df_nifty.columns:
+            col_lower = str(col).lower()
+            if col_lower == 'open':
+                key_mapping[col] = 'Open'
+            elif col_lower == 'high':
+                key_mapping[col] = 'High'
+            elif col_lower == 'low':
+                key_mapping[col] = 'Low'
+            elif col_lower == 'close':
+                key_mapping[col] = 'Close'
+            elif col_lower == 'volume':
+                key_mapping[col] = 'Volume'
+                
+        df_nifty = df_nifty.rename(columns=key_mapping)
+        
+        # Verify required columns are present
+        required = ['Date', 'Open', 'High', 'Low', 'Close']
+        missing = [col for col in required if col not in df_nifty.columns]
+        if missing:
+            raise ValueError(f"Missing required columns in Nifty DataFrame: {missing}. Available: {list(df_nifty.columns)}")
+            
+        # Enforce pd.to_datetime on 'Date'
+        df_nifty['Date'] = pd.to_datetime(df_nifty['Date'])
+        
+        # Sort ascending by Date and reset index
+        df_nifty = df_nifty.sort_values('Date').reset_index(drop=True)
+        
         if len(df_nifty) < 55:
             return "UNKNOWN"
             
@@ -1677,10 +1741,23 @@ def update_positions():
         if pd.isna(next_day_open) or next_day_open is None or next_day_open == 0:
             df_for_open = df if 'df' in locals() and df is not None else fetch_data(sym, start)
             if df_for_open is not None and not df_for_open.empty:
+                # Ensure date is sorted ascending
+                df_for_open = df_for_open.sort_values('DATE').reset_index(drop=True)
                 df_for_open['DATE_ONLY'] = pd.to_datetime(df_for_open['DATE']).dt.date
-                df_after = df_for_open[df_for_open['DATE_ONLY'] >= start].sort_values('DATE').reset_index(drop=True)
-                if len(df_after) >= 2:
-                    next_day_open = float(df_after['OPEN'].iat[1])
+                
+                # Normalize start date to datetime.date object (date-only, timezone-naive)
+                start_date_only = start
+                if hasattr(start_date_only, 'date'):
+                    start_date_only = start_date_only.date()
+                elif isinstance(start_date_only, pd.Timestamp):
+                    start_date_only = start_date_only.date()
+                elif isinstance(start_date_only, str):
+                    start_date_only = pd.to_datetime(start_date_only).date()
+                
+                # Filter for candles strictly greater than the breakout date
+                df_after = df_for_open[df_for_open['DATE_ONLY'] > start_date_only]
+                if not df_after.empty:
+                    next_day_open = float(df_after['OPEN'].iloc[0])
                     df_pos.loc[idx, "next_day_open"] = next_day_open
                     logger.info(f"💾 Recorded execution next-day open for {sym}: ₹{next_day_open:.2f}")
                     # Also update the corresponding signal in the signals collection
