@@ -22,6 +22,7 @@ instrument_keys_col = db["instrument_keys"] if db is not None else None
 ipos_col = db["ipos"] if db is not None else None
 listing_data_col = db["listing_data"] if db is not None else None
 watchlist_col = db["watchlist"] if db is not None else None
+system_audits_col = db["system_audits"] if db is not None else None
 
 # In-process cache — avoids a DB round-trip on every data fetch
 _instrument_key_cache: dict = {}
@@ -92,6 +93,8 @@ def ensure_indexes():
     ipos_col.create_index("symbol", unique=True)
     listing_data_col.create_index("symbol", unique=True)
     watchlist_col.create_index("symbol", unique=True)
+    system_audits_col.create_index("audit_id", unique=True)
+    system_audits_col.create_index("timestamp")
 
 def insert_log(scanner: str, symbol: str, action: str, candle_timestamp, details: dict, version: str = SCANNER_VERSION, source: str = "live", log_type: str = "ACCEPTED"):
     global _rejection_guard_warned
@@ -569,3 +572,58 @@ def get_active_symbols() -> list:
     except Exception as e:
         logger.error(f"[DB] get_active_symbols failed: {e}")
         return []
+
+
+def save_audit_to_db(
+    audit_id: str,
+    overall_status: str,
+    n_errors: int,
+    n_warnings: int,
+    findings: list,
+    performance_snapshot: dict,
+    fixes_applied: list = None,
+    report_file: str = None,
+) -> bool:
+    """
+    Persist a weekly audit run to the system_audits collection.
+
+    Args:
+        audit_id:             Unique identifier e.g. 'audit_20260531_121817'
+        overall_status:       'PASS' or 'FAIL'
+        n_errors:             Count of ERROR-level findings
+        n_warnings:           Count of WARN-level findings
+        findings:             Full list of finding dicts from the audit run
+        performance_snapshot: Dict with win_rate, avg_pnl, cohort_avg, etc.
+        fixes_applied:        List of fix descriptions applied in this run
+        report_file:          Absolute path to the saved .txt report file
+
+    Returns:
+        True on success, False on failure.
+    """
+    if system_audits_col is None:
+        logger.warning("[DB] system_audits_col is None — audit not saved to DB")
+        return False
+
+    doc = {
+        "audit_id":            audit_id,
+        "timestamp":           datetime.now(timezone.utc),
+        "overall_status":      overall_status,
+        "n_errors":            n_errors,
+        "n_warnings":          n_warnings,
+        "findings":            findings,
+        "performance_snapshot": performance_snapshot or {},
+        "fixes_applied":       fixes_applied or [],
+        "report_file":         report_file,
+    }
+
+    try:
+        system_audits_col.update_one(
+            {"audit_id": audit_id},
+            {"$set": doc, "$setOnInsert": {"created_at": datetime.now(timezone.utc)}},
+            upsert=True,
+        )
+        logger.info(f"[DB] Audit {audit_id} saved to system_audits collection")
+        return True
+    except Exception as e:
+        logger.error(f"[DB] save_audit_to_db failed for {audit_id}: {e}")
+        return False

@@ -243,3 +243,6 @@ monthly_system_report.json
 signals_performance_report.json
 validation_charts/
 *.html
+
+# Weekly audit report txt files (stored in MongoDB instead)
+audit_reports/

@@ -1,0 +1,133 @@
+name: Weekly System Audit
+
+on:
+  schedule:
+    # Every Saturday at 9:00 PM IST (3:30 PM UTC)
+    - cron: '30 15 * * 6'
+  workflow_dispatch:
+    inputs:
+      run_fixes:
+        description: 'Apply safe data fixes (shadow SL, regime, PnL reconciliation)'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      environment:
+        description: 'Environment to use'
+        required: false
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+
+jobs:
+  weekly-audit:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'production' }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Cache Python dependencies
+        id: cache-pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-v2-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            pip-${{ runner.os }}-
+
+      - name: Install Python dependencies
+        run: |
+          set -e
+          retry() {
+            local attempts="$1"
+            shift
+            local n=1
+            until "$@"; do
+              if [ "$n" -ge "$attempts" ]; then
+                echo "Command failed after $attempts attempts: $*"
+                return 1
+              fi
+              local wait=$((n * 5))
+              echo "Attempt $n failed. Retrying in ${wait}s..."
+              sleep "$wait"
+              n=$((n + 1))
+            done
+          }
+          python -m pip install --upgrade pip
+          echo "Installing beautifulsoup4==4.9.3 first..."
+          retry 4 pip install --retries 10 --timeout 120 beautifulsoup4==4.9.3
+          echo "Installing main dependencies..."
+          retry 4 pip install --retries 10 --timeout 120 -r requirements.txt
+          echo "Installing jugaad-data..."
+          retry 4 pip install --retries 10 --timeout 120 "jugaad-data>=0.27,<0.28"
+          echo "Dependencies installed."
+
+      - name: Validate environment
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          MONGO_URI:          ${{ secrets.MONGO_URI }}
+        run: |
+          echo "=== Environment Check ==="
+          if [ -z "$MONGO_URI" ]; then
+            echo "MONGO_URI is missing — cannot run audit."
+            exit 1
+          else
+            echo "MONGO_URI: set"
+          fi
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "Telegram credentials missing — alert will not be sent."
+          else
+            echo "Telegram: configured"
+          fi
+
+      - name: Check MongoDB connection
+        env:
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+        run: |
+          echo "Verifying MongoDB Atlas connection..."
+          python test_db_connection.py
+
+      - name: Run Weekly Audit (with fixes)
+        if: ${{ github.event_name == 'schedule' || github.event.inputs.run_fixes == 'true' }}
+        env:
+          MONGO_URI:            ${{ secrets.MONGO_URI }}
+          TELEGRAM_BOT_TOKEN:   ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:     ${{ secrets.TELEGRAM_CHAT_ID }}
+          UPSTOX_ACCESS_TOKEN:  ${{ secrets.UPSTOX_ACCESS_TOKEN }}
+          PYTHONIOENCODING:     utf-8
+          # GITHUB_ACTIONS is set automatically by GitHub — the audit script uses it
+          # to switch into CI mode (MongoDB + Telegram, no txt file).
+        run: |
+          echo "Running weekly audit with --fix flag..."
+          python weekly_audit_report.py --fix --save-only
+
+      - name: Run Weekly Audit (audit only, no fixes)
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.run_fixes == 'false' }}
+        env:
+          MONGO_URI:            ${{ secrets.MONGO_URI }}
+          TELEGRAM_BOT_TOKEN:   ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:     ${{ secrets.TELEGRAM_CHAT_ID }}
+          UPSTOX_ACCESS_TOKEN:  ${{ secrets.UPSTOX_ACCESS_TOKEN }}
+          PYTHONIOENCODING:     utf-8
+        run: |
+          echo "Running weekly audit without fixes..."
+          python weekly_audit_report.py --save-only
+
+      - name: Workflow Complete
+        run: |
+          echo "Weekly audit workflow completed."
+          echo "Results saved to MongoDB system_audits collection."
+          echo "Telegram alert sent to configured chat."
