@@ -662,19 +662,23 @@ NSE_HOLIDAYS = {
     "2025-12-25",  # Christmas
     # 2026 holidays
     "2026-01-26",  # Republic Day
-    "2026-02-17",  # Mahashivratri
+    "2026-02-19",  # Chhatrapati Shivaji Maharaj Jayanti
     "2026-03-03",  # Holi
-    "2026-03-20",  # Id-Ul-Fitr (Ramadan Eid) - tentative
+    "2026-03-19",  # Gudi Padwa
+    "2026-03-26",  # Shri Ram Navami
+    "2026-03-31",  # Shri Mahavir Jayanti
     "2026-04-03",  # Good Friday
     "2026-04-14",  # Dr. Baba Saheb Ambedkar Jayanti
     "2026-05-01",  # Maharashtra Day
+    "2026-05-28",  # Bakri Id
+    "2026-06-26",  # Muharram
     "2026-08-15",  # Independence Day
-    "2026-08-21",  # Ganesh Chaturthi
+    "2026-08-26",  # Id-E-Milad
+    "2026-09-14",  # Ganesh Chaturthi
     "2026-10-02",  # Mahatma Gandhi Jayanti
     "2026-10-20",  # Dussehra
-    "2026-11-12",  # Diwali Laxmi Pujan (tentative)
-    "2026-11-13",  # Diwali Balipratipada (tentative)
-    "2026-11-23",  # Prakash Gurpurb Sri Guru Nanak Dev Ji (tentative)
+    "2026-11-10",  # Diwali Balipratipada
+    "2026-11-24",  # Prakash Gurpurb Sri Guru Nanak Dev Ji
     "2026-12-25",  # Christmas
 }
 
