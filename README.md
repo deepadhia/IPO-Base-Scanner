@@ -224,6 +224,8 @@ IPO-Base-Scanner/
 ```
 
 **⚠️ ARCHITECTURAL FREEZE**: As of v2.5.0, the system is strictly **MongoDB-only**. All CSV fallback paths have been purged to ensure a stationary, high-fidelity quant baseline.
+* **State Persistence**: Intraday pending breakout states (rejection and confirmation tracking) are persisted in MongoDB (`pending_states` collection) with disk fallback, ensuring stateless runners (e.g., GitHub Actions) can track observation windows reliably across runs.
+* **Timezone Safety**: Daily dates and timestamps are standardized to UTC midnight via IST extraction boundaries to prevent platform-timezone shifting bugs (the "1-day backwards" bug) across different runner locations.
 ```
 
 - **Phase 3**: 3-Day Live Validation (Zero Failure Cutover).
