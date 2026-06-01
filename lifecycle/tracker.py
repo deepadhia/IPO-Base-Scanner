@@ -12,8 +12,13 @@ class LifecycleTracker:
         Records a daily snapshot of the trade's progress.
         """
         try:
-            # Normalize date to start of day for the unique index
-            update_date = date.replace(hour=0, minute=0, second=0, microsecond=0)
+            # Normalize date to start of day for the unique index (UTC midnight representing IST date)
+            from datetime import timezone, timedelta
+            ist = timezone(timedelta(hours=5, minutes=30))
+            if date.tzinfo is None:
+                date = date.replace(tzinfo=ist)
+            ist_date = date.astimezone(ist).date()
+            update_date = datetime.combine(ist_date, datetime.min.time(), tzinfo=timezone.utc)
             
             runup_pct = (current_price - entry_price) / entry_price
             # Drawdown is only captured if it's negative relative to entry

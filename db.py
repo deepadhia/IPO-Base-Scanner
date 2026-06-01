@@ -51,9 +51,14 @@ def make_utc(dt) -> datetime:
         return dt
     if not isinstance(dt, datetime):
         dt = datetime.combine(dt, datetime.min.time(), tzinfo=timezone.utc)
-    if dt.tzinfo is None:
-        # Assume naive datetimes originating from the system are IST
-        dt = dt.replace(tzinfo=IST)
+    else:
+        if dt.time() == datetime.min.time():
+            # If it's representing local midnight (e.g. from Upstox or YFinance),
+            # extract the local calendar date first and normalize to UTC midnight.
+            dt = datetime.combine(dt.date(), datetime.min.time(), tzinfo=timezone.utc)
+        elif dt.tzinfo is None:
+            # Assume naive datetimes originating from the system are IST
+            dt = dt.replace(tzinfo=IST)
     return dt.astimezone(timezone.utc)
 
 def generate_log_id(scanner: str, symbol: str, action: str, candle_timestamp, version: str, details: dict = None) -> str:

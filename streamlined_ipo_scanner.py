@@ -29,6 +29,8 @@ from jugaad_data.nse.history import stock_raw
 import pandas as pd
 import threading
 
+IST = timezone(timedelta(hours=5, minutes=30))
+
 # Institutional Analytics & Enrichment (Phase 2.2 Upgrade)
 try:
     from core.repository import MongoRepository
@@ -1784,7 +1786,7 @@ def update_positions():
                     entry_price=float(pos["entry_price"]),
                     stop_price=float(pos["stop_loss"]),
                     current_price=float(current_price),
-                    date=datetime.now()
+                    date=datetime.now(IST)
                 )
             except Exception as e:
                 logger.error(f"❌ Failed to record lifecycle update for {sym}: {e}")
@@ -4248,8 +4250,10 @@ if __name__ == "__main__":
 
     def generate_daily_summary():
         try:
-            today_str = datetime.today().strftime('%Y-%m-%d')
-            today_dt = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+            now_ist = datetime.now(IST)
+            today_str = now_ist.strftime('%Y-%m-%d')
+            today_start_ist = datetime.combine(now_ist.date(), datetime.min.time(), tzinfo=IST)
+            today_dt = today_start_ist.astimezone(timezone.utc)
             todays_log_dir = os.path.join("logs", today_str)
             os.makedirs(todays_log_dir, exist_ok=True)
             

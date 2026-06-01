@@ -19,8 +19,11 @@ def main():
     signals_v2 = db["signals"]
     signal_updates = db["positions"]
     
-    # Today's range in UTC (Match logic of the daily scanner)
-    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    # Today's range in UTC based on IST day boundaries (Match logic of the daily scanner)
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now_ist = datetime.now(ist)
+    today_start_ist = datetime.combine(now_ist.date(), datetime.min.time(), tzinfo=ist)
+    today = today_start_ist.astimezone(timezone.utc)
     tomorrow = today + timedelta(days=1)
     
     # 1. Fetch Signals for Today

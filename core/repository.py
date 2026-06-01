@@ -16,7 +16,7 @@ except ImportError:
     from dotenv import load_dotenv
     load_dotenv()
     MONGO_URI = os.getenv("MONGO_URI", "")
-    client = MongoClient(MONGO_URI) if MONGO_URI else None
+    client = MongoClient(MONGO_URI, tz_aware=True) if MONGO_URI else None
     db = client["ipo_scanner_v2"] if client else None
 
 logger = logging.getLogger(__name__)
