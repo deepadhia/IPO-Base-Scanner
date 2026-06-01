@@ -595,7 +595,17 @@ def initialize_watchlist_data_csv():
 
 
 def load_pending_breakouts():
-    """Load pending breakout confirmation state from disk."""
+    """Load pending breakout confirmation state from MongoDB with disk fallback."""
+    try:
+        from db import db
+        if db is not None:
+            doc = db["pending_states"].find_one({"_id": "listing_pending_breakouts"})
+            if doc and "data" in doc:
+                return doc["data"]
+    except Exception as db_e:
+        logger.warning(f"Could not load pending breakouts from MongoDB: {db_e}")
+
+    # Fall back to local disk file
     if not os.path.exists(PENDING_BREAKOUTS_FILE):
         return {}
     try:
@@ -609,12 +619,25 @@ def load_pending_breakouts():
 
 
 def save_pending_breakouts(data):
-    """Persist pending breakout confirmation state."""
+    """Persist pending breakout confirmation state to MongoDB and disk."""
+    # Save to MongoDB first
+    try:
+        from db import db
+        if db is not None:
+            db["pending_states"].update_one(
+                {"_id": "listing_pending_breakouts"},
+                {"$set": {"data": data, "updated_at": datetime.utcnow()}},
+                upsert=True
+            )
+    except Exception as db_e:
+        logger.warning(f"Could not save pending breakouts to MongoDB: {db_e}")
+
+    # Save to local disk file as secondary fallback
     try:
         with open(PENDING_BREAKOUTS_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.warning(f"Could not save pending breakouts: {e}")
+        logger.warning(f"Could not save pending breakouts to disk: {e}")
 
 
 def _now_ist():
