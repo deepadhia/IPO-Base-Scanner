@@ -159,7 +159,16 @@ def fetch_intraday_data_yfinance(symbol, interval=INTRADAY_INTERVAL):
         
         # Rename columns to match expected format
         df = df.reset_index()
-        df.columns = ['DATE', 'OPEN', 'HIGH', 'LOW', 'CLOSE', 'VOLUME']
+        date_col = next((c for c in df.columns if 'date' in str(c).lower() or 'time' in str(c).lower()), df.columns[0])
+        df = df.rename(columns={
+            date_col: 'DATE',
+            'Open': 'OPEN',
+            'High': 'HIGH',
+            'Low': 'LOW',
+            'Close': 'CLOSE',
+            'Volume': 'VOLUME'
+        })
+        df = df[['DATE', 'OPEN', 'HIGH', 'LOW', 'CLOSE', 'VOLUME']]
         df['LTP'] = df['CLOSE']
         
         # Ensure DATE is datetime (should already be from yfinance, but verify)
