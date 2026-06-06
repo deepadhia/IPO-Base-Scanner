@@ -987,11 +987,17 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None):
         logger.info(f"   Current High: ₹{current_high:.2f} ({price_source})")
         logger.info(f"   Breakout Required: Current High > ₹{listing_day_high:.2f}")
         
-        # Calculate average volume (last 10 days excluding listing day)
-        if len(df) > 1:
-            recent_df = df.tail(10)
-            avg_volume = recent_df['VOLUME'].mean()
+        # Calculate average volume baseline from prior completed bars only.
+        # Always exclude the latest (last) bar: during live market hours it is a
+        # partial intraday candle, so including it would deflate the average and
+        # make volume_spike appear easier to satisfy than it actually is.
+        if len(df) > 2:
+            avg_volume = float(df.iloc[:-1]['VOLUME'].tail(10).mean())
+        elif len(df) == 2:
+            # Only the listing day bar is available as baseline
+            avg_volume = float(df.iloc[0]['VOLUME'])
         else:
+            # Single bar (listing day itself) — no prior baseline
             avg_volume = current_volume
         
         # Check for breakout
@@ -1216,20 +1222,28 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None):
                 # Passed strict checks — treat as high-quality (no LOW_VOL grade)
                 volume_warnings = []
             
-            # 15-day Local Swing Low Stop Loss (capped at 12% max risk)
-            support = float(df['LOW'].tail(15).min())
+            # 15-day Local Swing Low Stop Loss (capped at 12% max risk).
+            # Use prior completed bars only (exclude today's bar) for consistency
+            # with the avg_volume baseline — the last bar may be a partial candle.
+            swing_df = df.iloc[:-1] if len(df) > 1 else df
+            support = float(swing_df['LOW'].tail(15).min())
             struct_stop = support * 0.97
-            max_risk_stop = entry_price * 0.88
+            max_risk_stop = entry_price * 0.88  # 12% hard cap
             stop_loss = max(struct_stop, max_risk_stop)
-            
+
             # Fallback to flat 8% stop if structural stop is invalid or above entry price
             if stop_loss >= entry_price or pd.isna(stop_loss):
                 stop_loss = entry_price * 0.92
-                
-            raw_stop_pct = ((entry_price - struct_stop) / entry_price * 100.0) if entry_price > 0 else 0.0
-            capped_stop_pct = ((entry_price - stop_loss) / entry_price * 100.0) if entry_price > 0 else 0.0
-            stop_type = "swing_low_cap12"
-            risk_cap_applied = bool(raw_stop_pct > 12.0)
+                # Telemetry: record the correct stop type so analytics are not corrupted
+                stop_type = "flat_8pct_fallback"
+                raw_stop_pct = 8.0
+                capped_stop_pct = 8.0
+                risk_cap_applied = False
+            else:
+                raw_stop_pct = ((entry_price - struct_stop) / entry_price * 100.0) if entry_price > 0 else 0.0
+                capped_stop_pct = ((entry_price - stop_loss) / entry_price * 100.0) if entry_price > 0 else 0.0
+                stop_type = "swing_low_cap12"
+                risk_cap_applied = bool(raw_stop_pct > 12.0)
             
             # Target calculation: Use entry price + percentage of listing range
             if entry_above_high_pct <= 2.0:
@@ -1712,6 +1726,10 @@ def save_breakout_signal(breakout_data):
             volume_warnings = breakout_data.get('volume_warnings', [])
             volume_note = f"VOLUME_CAUTION: {'; '.join(volume_warnings)}"
         
+        # Resolve market regime FIRST — used in both the capital gate and the signal doc.
+        _mr = get_market_regime(today)
+        size_mult = scanner_module.REGIME_SIZE_MULT.get(_mr, 0.5)
+
         # --- Capital Allocation Gate: Max Active Positions Limit (Soft Cap 5 / Hard Cap 7) ---
         try:
             from db import positions_col
@@ -1732,9 +1750,6 @@ def save_breakout_signal(breakout_data):
         except Exception as cap_e:
             logger.error(f"Error evaluating listing day capital allocation cap: {cap_e}")
             portfolio_full = False
-            
-        _mr = get_market_regime(today)
-        size_mult = scanner_module.REGIME_SIZE_MULT.get(_mr, 0.5)
 
         new_signal = {
             "signal_id": signal_id,
@@ -1906,7 +1921,11 @@ def add_position(breakout_data):
     """Add position to MongoDB (DB-only)."""
     try:
         today = datetime.now().date()
-        
+
+        # Resolve market regime FIRST — used in both the capital gate and the position doc.
+        _mr = get_market_regime(today)
+        size_mult = scanner_module.REGIME_SIZE_MULT.get(_mr, 0.5)
+
         # --- Capital Allocation Gate: Max Active Positions Limit (Soft Cap 5 / Hard Cap 7) ---
         try:
             from db import positions_col
@@ -1925,7 +1944,7 @@ def add_position(breakout_data):
                     portfolio_full = True
         except Exception:
             portfolio_full = False
-            
+
         if portfolio_full:
             logger.warning(f"⏭️ Portfolio FULL ({active_count} active). Skipping live position write for {breakout_data['symbol']}. (Soft Cap: {scanner_module.MAX_ACTIVE_POSITIONS}, Hard Cap: {scanner_module.HARD_ACTIVE_POSITIONS})")
             return True
@@ -1937,9 +1956,6 @@ def add_position(breakout_data):
                 return False
         except Exception:
             pass
-            
-        _mr = get_market_regime(today)
-        size_mult = scanner_module.REGIME_SIZE_MULT.get(_mr, 0.5)
         
         signal_id = f"LISTING_{breakout_data['symbol']}_{today.strftime('%Y%m%d')}"
         
