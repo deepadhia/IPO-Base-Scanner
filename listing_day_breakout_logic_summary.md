@@ -1,137 +1,72 @@
-# Listing Day Breakout Scanner - Logic Summary
+# Listing Day Breakout Scanner - Logic Summary (v2.5.0)
 
-## Strict quality mode (default — “good trades only”)
+## Strict Quality Mode (Default — “Good Trades Only”)
 
-Set `LISTING_STRICT_QUALITY=true` (default). Then a **BREAKOUT** is saved to CSV / positions **only if**:
+The Listing Day Breakout Scanner runs in strict quality mode (`LISTING_STRICT_QUALITY=true` by default) to filter out market noise and capture only pristine institutional setups.
 
-| Check | Default (strict) |
-|--------|------------------|
-| Days since listing | ≤ `LISTING_MAX_DAYS_SINCE_LISTING` (60) |
-| Volume vs 10d avg | ≥ `LISTING_MIN_VOLUME_MULT` (1.8×) |
-| Volume vs listing day | ≥ `LISTING_MIN_VOL_VS_LISTING` (1.0×) when listing-day volume > 0 |
-| Listing vol missing/0 | Today's vol ≥ `LISTING_MIN_VOL_MULT_WHEN_NO_LISTING_VOL` (2×) avg |
-| Entry above listing high | ≤ `LISTING_MAX_ENTRY_ABOVE_HIGH_PCT` (3.5%) |
-| Min R:R | ≥ `LISTING_MIN_RISK_REWARD` (1.25) |
-
-Set `LISTING_STRICT_QUALITY=false` to restore **low-volume cautions** (`LISTING_BREAKOUT_LOW_VOL`) without hard rejection.
+| Check | Default Setting (Strict Mode) |
+| :--- | :--- |
+| **Max Days Since Listing** | ≤ `LISTING_MAX_DAYS_SINCE_LISTING` (**730 days / 2 years**) |
+| **Volume vs 10d Avg** | ≥ `LISTING_MIN_VOLUME_MULT` (**1.8×** to **2.0×** depending on Tier) |
+| **Volume vs Listing Day** | ≥ `LISTING_MIN_VOL_VS_LISTING` (**1.0×**) when listing volume > 0 |
+| **Volume (Listing Vol Missing)**| Today's volume ≥ `LISTING_MIN_VOL_MULT_WHEN_NO_LISTING_VOL` (**2.0×** avg) |
+| **Entry Above Listing High** | ≤ `LISTING_MAX_ENTRY_ABOVE_HIGH_PCT` (**3.5%**) |
+| **Min Risk/Reward Ratio** | ≥ `LISTING_MIN_RISK_REWARD` (**1.25**) |
+| **Leader Score Threshold** | ≥ `LISTING_MIN_LEADER_SCORE` (**5 / 8**) |
 
 ---
 
-## Requirements (Final Implementation):
-1. ✅ Detect shares near listing day high (within 5% limit)
-2. ✅ Listing day high and listing day low are important levels (reference)
-3. ✅ Stop loss is fixed at 8% below entry (not based on listing day low)
-4. ✅ No time filter - IPOs that correct for months and then break listing day high are valid
-5. ✅ Volume confirmation required (1.2x listing day volume)
+## Deployed Strategy Rules (Final v2.5.0 Specification):
 
-## Current Implementation:
+### 1. Entry & Breakout Levels
+* **Watchlist Proximity:** Tracks and alerts when a stock is within **5% below** its listing day high.
+* **Breakout Confirmations:** Triggers a breakout when current price/high breaks above the listing day high.
+* **Intraday Confirmation Gate:** If market is open, breakouts on IPOs less than 5 days old are held in `PENDING` state for **60 minutes** to prevent intraday whipsaw wicks.
+* **Turnover & Liquidity Floor:** Rejects signals with average daily turnover **< 1.0 Cr** (micro-caps) or circuit days **≥ 3 in 15 sessions**.
 
-### 1. Entry Detection (Within 5% of Listing Day High)
-- **Filter**: `MAX_ENTRY_ABOVE_HIGH_PCT = 5.0%`
-- Only generates signals when current price is within 5% above listing day high
-- Rejects signals if price is too far from breakout level
-- **Rationale**: Prevents late entries after breakout has already moved significantly
+### 2. Upgraded Stop Loss (15-Day Local Swing Low + 12% Risk Cap)
+* The stop loss is anchored to the **15-day local swing low** (including the breakout candle low) with a 3% buffer:
+  `struct_stop = support_local * 0.97`
+* To prevent excessive risk, individual trade risk is **capped at 12.0%**:
+  `max_risk_stop = entry_price * 0.88`
+* The final stop is the tighter of the two:
+  `stop_loss = max(struct_stop, max_risk_stop)`
+* **Fallback Stop:** Falls back to a flat **8% stop loss** (`entry_price * 0.92`) if the calculated structural stop is invalid or above the entry price.
 
-### 2. Stop Loss Calculation (Fixed 8% Below Entry)
-- **Fixed Percentage**: Always 8% below entry price
-- **Formula**: `stop_loss = entry_price * 0.92`
-- **NOT based on listing day low** - listing day low is reference only
-- **Rationale**: Consistent risk management regardless of listing day range
+### 3. Listing Age Limits (1-2 Years Max)
+* IPOs are eligible for scanning and breakouts for up to **730 calendar days (2 years)** post-listing.
+* This allows the scanner to capture breakouts that occur after a long consolidation or accumulation base formation (e.g. 1 year) while filtering out stale/mature listings that are no longer in their high-velocity IPO phase.
 
-### 3. Listing Day Low (Reference Only)
-- **Purpose**: Last support level (informational/reference)
-- **NOT used in stop loss calculation**
-- Displayed in alerts for context
-- **Rationale**: Important level to be aware of, but stop loss is entry-based
+### 4. Risk/Reward and Targets
+* Target calculations are anchored to entry price plus a multiplier of the listing day range:
+  * Entry ≤2% above listing high → 100% of listing day range.
+  * Entry 2-5% above listing high → 75% of listing day range.
+  * Entry >5% above listing high → 50% of listing day range.
+* A minimum risk/reward ratio of **1:1.25** is enforced. Setups where the potential range expansion target does not justify the stop loss size are rejected.
 
-### 4. No Time Filter
-- **Removed**: No maximum days since listing filter
-- **Rationale**: IPOs can correct for months before breaking listing day high - these are valid signals
-- Days since listing is still calculated and displayed for information
-
-### 5. Volume Confirmation
-- **Filter**: `MIN_VOLUME_VS_LISTING_DAY = 1.2x`
-- Current volume must be at least 1.2x (20% higher) than listing day volume
-- **Rationale**: Ensures breakout has sufficient volume support
-
-### 6. Risk/Reward Validation
-- **Minimum**: 1:1 risk/reward ratio required
-- Rejects signals with poor risk/reward
-- **Rationale**: Ensures potential reward justifies the risk
-
-### 7. Target Calculation
-- **Based on Entry Price**: `target = entry_price + (listing_range * multiplier)`
-- **Multiplier**: 
-  - Entry ≤2% above listing high → 100% of range
-  - Entry 2-5% above listing high → 75% of range
-- **Rationale**: Ensures target is always above entry price
-
-## Filter Order (Applied Sequentially):
-
-1. **Entry Distance Filter**: Entry must be within 5% of listing day high
-2. **Volume Confirmation**: Current volume ≥1.2x listing day volume
-3. **Stop Loss Calculation**: Fixed 8% below entry
-4. **Risk/Reward Filter**: Minimum 1:1 ratio required
+---
 
 ## Example Scenarios:
 
-### Scenario 1: Fresh Breakout (Accepted)
-- Listing High: ₹100
-- Listing Low: ₹95 (5% range)
-- Entry: ₹102 (2% above listing high)
-- Days Since Listing: 3 days
-- Current Volume: 1.5x listing day volume
-- Stop Loss: ₹93.84 (8% below entry)
-- Target: ₹107 (entry + 100% of range)
-- Result: ✅ Accepted - Fresh breakout with proper volume
+### Scenario 1: Tight 15-day Swing Low Breakout (Accepted)
+* Listing Day High: ₹100
+* 15-day Swing Low: ₹95 (3% buffer stop at ₹92.15)
+* Entry: ₹102 (2% above listing high)
+* Days Since Listing: 45 days
+* Risk: `(102 - 92.15) / 102 = 9.65%` (below 12% cap)
+* Result: **✅ Accepted** - Stop loss placed at ₹92.15.
 
-### Scenario 2: Extended Correction (Accepted)
-- Listing High: ₹100
-- Listing Low: ₹80 (20% range - wide range accepted)
-- Entry: ₹103 (3% above listing high)
-- Days Since Listing: 120 days (4 months - no time filter)
-- Current Volume: 1.3x listing day volume
-- Stop Loss: ₹94.76 (8% below entry)
-- Target: ₹108.25 (entry + 75% of range)
-- Result: ✅ Accepted - Extended correction breakout is valid
+### Scenario 2: Wide Base Capped Breakout (Accepted with Cap)
+* Listing Day High: ₹100
+* 15-day Swing Low: ₹85 (3% buffer stop at ₹82.45)
+* Entry: ₹103 (3% above listing high)
+* Days Since Listing: 320 days (approx. 1 year base)
+* Raw Risk: `(103 - 82.45) / 103 = 19.95%` (above 12% cap)
+* Capped Stop Loss: ₹90.64 (12% cap applied)
+* Result: **✅ Accepted** - Stop loss placed at ₹90.64 (12% risk limit).
 
-### Scenario 3: Entry Too Far (Rejected)
-- Listing High: ₹100
-- Entry: ₹110 (10% above listing high)
-- Result: ❌ Rejected - Entry >5% above listing high
-
-### Scenario 4: Insufficient Volume (Rejected)
-- Listing High: ₹100
-- Entry: ₹102 (2% above listing high)
-- Current Volume: 1.0x listing day volume (below 1.2x minimum)
-- Result: ❌ Rejected - Insufficient volume confirmation
-
-### Scenario 5: Poor Risk/Reward (Rejected)
-- Listing High: ₹100
-- Listing Low: ₹99 (1% range - very tight)
-- Entry: ₹102 (2% above listing high)
-- Stop Loss: ₹93.84 (8% below entry)
-- Target: ₹103 (entry + 100% of range = only ₹1 above entry)
-- Risk: ₹8.16, Reward: ₹1
-- Risk/Reward: 1:0.12
-- Result: ❌ Rejected - Risk/Reward <1:1
-
-## Key Points:
-
-✅ **Stop Loss**: Always 8% below entry (fixed, not variable)
-✅ **No Range Rejection**: Wide listing day ranges are accepted
-✅ **No Time Filter**: IPOs correcting for months are valid
-✅ **Entry Filter**: Must be within 5% of listing day high
-✅ **Volume Required**: Must have 1.2x listing day volume
-✅ **Listing Day Low**: Reference only (not used in calculations)
-✅ **Target**: Always above entry (based on entry + % of range)
-
-## Summary:
-The system now:
-- ✅ Detects shares within 5% of listing day high
-- ✅ Uses fixed 8% stop loss below entry
-- ✅ Accepts IPOs regardless of time since listing
-- ✅ Requires volume confirmation (1.2x listing day volume)
-- ✅ Shows listing day low as reference (not used in stop loss)
-- ✅ Ensures minimum 1:1 risk/reward ratio
-- ✅ Calculates target based on entry price (always above entry)
+### Scenario 3: Stale IPO (Rejected)
+* Listing Day High: ₹100
+* Entry: ₹102
+* Days Since Listing: 780 days (> 2 years old)
+* Result: **❌ Rejected** - Too old to qualify as an IPO breakout setup.

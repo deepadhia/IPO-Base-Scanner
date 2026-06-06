@@ -25,15 +25,13 @@ The system runs **two core scanners** plus an intraday watchlist scanner.
 
 ### 1. 📅 Listing Day Breakout Scanner (`listing_day_breakout_scanner.py`)
 
-Targets the **listing day** and the days immediately following, when momentum is freshest and institutional footprints are most visible.
+Targets IPOs from listing day up to **730 calendar days (2 years)** post-listing to capture momentum breakouts, including those occurring after a long base (1-2 years) consolidation.
 
-**Flow:**
-1. **Symbol detected on listing day** → enters `PENDING` observation state.
-2. **Behaviour observation** → system monitors price action for 45–60 minutes post-breakout.
-3. **Rejection** → terminated instantly if price falls back below breakout level or rejection tail exceeds the mathematical threshold.
-4. **`CONFIRMED` execution** → only mathematically confirmed breakouts generate actionable signals.
-
-> **Time Decay Filter**: If a confirmed breakout fails to sustain ≥1.5% away from the breakout level within a defined window (60–90 min), it is treated as a "dead breakout" and silently rejected.
+**Flow & Key Rules:**
+1. **Age Constraint:** Filters out IPOs older than **730 days (2 years)** to focus strictly on high-velocity setups.
+2. **Stop Loss (15-Day Local Swing Low, 12% Risk Cap):** Dynamically calculates the stop loss based on the 15-day local swing low (buffered by 3%), capped at a tight maximum risk of **12%** to shield against large drawdowns.
+3. **Observation State:** Freshly listed symbols (<5 days old) entering breakout levels enter a `PENDING` state for **60 minutes** during market hours to verify EOD close confirmation.
+4. **Volume & Liquidity Floor:** Rejects signals with average daily turnover **< 1.0 Cr** or circuit days **≥ 3 in 15 sessions**.
 
 ---
 

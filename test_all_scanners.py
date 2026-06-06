@@ -150,7 +150,7 @@ try:
     
     functions_to_check = [
         'check_listing_day_breakout',
-        'scan_recent_ipos'
+        'scan_listing_day_breakouts'
     ]
     
     missing_functions = []

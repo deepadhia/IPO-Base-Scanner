@@ -172,12 +172,14 @@ def upsert_signal(signal_doc: dict):
     if not signal_id:
         return
         
-    signal_doc["updated_at"] = datetime.now(timezone.utc)
+    doc = signal_doc.copy()
+    doc.pop("created_at", None)
+    doc["updated_at"] = datetime.now(timezone.utc)
     
     try:
         signals_col.update_one(
             {"signal_id": signal_id},
-            {"$set": signal_doc, "$setOnInsert": {"created_at": datetime.now(timezone.utc)}},
+            {"$set": doc, "$setOnInsert": {"created_at": datetime.now(timezone.utc)}},
             upsert=True
         )
         increment_metric("db_inserts")
@@ -333,6 +335,7 @@ def upsert_ipo(symbol: str, listing_date=None, name: str = None, **kwargs):
         "updated_at": datetime.now(timezone.utc),
         **kwargs
     }
+    doc.pop("created_at", None)
     try:
         ipos_col.update_one(
             {"symbol": symbol},
@@ -349,6 +352,7 @@ def upsert_listing_data(symbol: str, data: dict):
         return
         
     doc = data.copy()
+    doc.pop("created_at", None)
     doc["symbol"] = symbol
     doc["updated_at"] = datetime.now(timezone.utc)
     
@@ -385,6 +389,7 @@ def upsert_watchlist(symbol: str, data: dict = None):
     if watchlist_col is None:
         return
     doc = data.copy() if data else {}
+    doc.pop("created_at", None)
     doc["symbol"] = symbol
     doc["status"] = doc.get("status", "ACTIVE")
     doc["updated_at"] = datetime.now(timezone.utc)

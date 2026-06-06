@@ -82,13 +82,15 @@ class TestRegressionFixes(unittest.TestCase):
         self.assertNotEqual(regime_upstox, "UNKNOWN")
         self.assertIn(regime_upstox, ["BULL", "WEAK_BULL", "RANGE", "CORRECTION"])
 
+    @patch('streamlined_ipo_scanner.get_last_trading_day')
     @patch('streamlined_ipo_scanner.fetch_data')
     @patch('streamlined_ipo_scanner.get_live_price')
     @patch('db.get_all_positions_df')
     @patch('db.upsert_position')
     @patch('db.signals_col')
-    def test_next_day_open_resolution(self, mock_signals_col, mock_upsert, mock_get_pos, mock_live_price, mock_fetch):
+    def test_next_day_open_resolution(self, mock_signals_col, mock_upsert, mock_get_pos, mock_live_price, mock_fetch, mock_last_trading_day):
         # Mock database calls
+        mock_last_trading_day.return_value = date(2026, 6, 2)
         mock_signals_col.update_one = MagicMock()
         mock_upsert.return_value = None
         mock_live_price.return_value = (None, None, None) # Force fallback to fetch_data
@@ -164,13 +166,15 @@ class TestRegressionFixes(unittest.TestCase):
         self.assertEqual(upserted_args[0]["next_day_open"], 105.0) # Monday open
         self.assertEqual(upserted_args[1]["next_day_open"], 105.0) # Monday open (not Tuesday!)
 
+    @patch('streamlined_ipo_scanner.get_last_trading_day')
     @patch('streamlined_ipo_scanner.fetch_data')
     @patch('streamlined_ipo_scanner.get_live_price')
     @patch('db.get_all_positions_df')
     @patch('db.upsert_position')
     @patch('db.signals_col')
-    def test_next_day_open_holiday_gap(self, mock_signals_col, mock_upsert, mock_get_pos, mock_live_price, mock_fetch):
+    def test_next_day_open_holiday_gap(self, mock_signals_col, mock_upsert, mock_get_pos, mock_live_price, mock_fetch, mock_last_trading_day):
         # Mock database calls
+        mock_last_trading_day.return_value = date(2026, 6, 2)
         mock_signals_col.update_one = MagicMock()
         mock_upsert.return_value = None
         mock_live_price.return_value = (None, None, None)

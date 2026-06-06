@@ -117,7 +117,7 @@ MIN_VOLUME_VS_LISTING_DAY = _env_float(
 )
 # Reject listing-high breakouts when IPO is too old (strategy is "listing day" edge)
 MAX_DAYS_SINCE_LISTING_FOR_BREAKOUT = _env_int(
-    "LISTING_MAX_DAYS_SINCE_LISTING", 500
+    "LISTING_MAX_DAYS_SINCE_LISTING", 730
 )
 # If listing-day volume in CSV is 0 / missing, require this multiple of recent avg volume
 MIN_VOL_MULT_WHEN_NO_LISTING_VOL = _env_float(
@@ -131,11 +131,11 @@ LISTING_MIN_LEADER_SCORE = _env_int(
 )
 # Watchlist = attention layer only; in strict mode use same strategy lens as breakouts (fresh IPO + real volume).
 LISTING_WATCHLIST_MAX_DAYS_SINCE_LISTING = _env_int(
-    "LISTING_WATCHLIST_MAX_DAYS_SINCE_LISTING", 90 if LISTING_STRICT_QUALITY else 365
+    "LISTING_WATCHLIST_MAX_DAYS_SINCE_LISTING", 730
 )
 # Hard cap: beyond this, not an “IPO base” setup at all (normal stock)
 LISTING_WATCHLIST_ABSOLUTE_MAX_AGE_DAYS = _env_int(
-    "LISTING_WATCHLIST_ABSOLUTE_MAX_AGE_DAYS", 120 if LISTING_STRICT_QUALITY else 365
+    "LISTING_WATCHLIST_ABSOLUTE_MAX_AGE_DAYS", 730
 )
 # 0 = disabled. Use with base-quality filter: dry-up is allowed when structure is tight.
 LISTING_WATCHLIST_MIN_VOLUME_MULT = _env_float(
@@ -222,20 +222,20 @@ LISTING_WATCHLIST_MAX_SIGN_FLIPS = _env_int(
 # ---------------------------------------------------------------------------
 # Tier A+: perfect base + listing high breakout + volume + fresh IPO → 100% size
 LISTING_TIER_APLUS_MIN_VOLUME_MULT  = _env_float("LISTING_TIER_APLUS_MIN_VOLUME_MULT", 1.8)
-LISTING_TIER_APLUS_MAX_AGE_DAYS     = _env_int("LISTING_TIER_APLUS_MAX_AGE_DAYS", 365)
+LISTING_TIER_APLUS_MAX_AGE_DAYS     = _env_int("LISTING_TIER_APLUS_MAX_AGE_DAYS", 730)
 
 # Tier A: pure momentum — strong volume, no base required, NOT perfect base → 60% size
 LISTING_TIER_A_MIN_VOLUME_MULT = _env_float("LISTING_TIER_A_MIN_VOLUME_MULT", 2.0)
-LISTING_TIER_A_MAX_AGE_DAYS    = _env_int("LISTING_TIER_A_MAX_AGE_DAYS", 365)
+LISTING_TIER_A_MAX_AGE_DAYS    = _env_int("LISTING_TIER_A_MAX_AGE_DAYS", 730)
 
 # Tier A — controlled fallback: outside A windows but still valid → 50% size
-LISTING_TIER_A_FALLBACK_MAX_AGE_DAYS       = _env_int("LISTING_TIER_A_FALLBACK_MAX_AGE_DAYS", 365)
+LISTING_TIER_A_FALLBACK_MAX_AGE_DAYS       = _env_int("LISTING_TIER_A_FALLBACK_MAX_AGE_DAYS", 730)
 LISTING_TIER_A_FALLBACK_POSITION_SIZE_PCT  = _env_int("LISTING_TIER_A_FALLBACK_POSITION_SIZE_PCT", 50)
 
 # Tier B: base breakout below listing high (accumulation-driven) → 40% size
 LISTING_TIER_B_ENABLED                    = _env_bool("LISTING_TIER_B_ENABLED", True)
 LISTING_TIER_B_MAX_DISTANCE_FROM_HIGH_PCT = _env_float("LISTING_TIER_B_MAX_DISTANCE_FROM_HIGH_PCT", 20.0)
-LISTING_TIER_B_MAX_AGE_DAYS               = _env_int("LISTING_TIER_B_MAX_AGE_DAYS", 365)
+LISTING_TIER_B_MAX_AGE_DAYS               = _env_int("LISTING_TIER_B_MAX_AGE_DAYS", 730)
 LISTING_TIER_B_POSITION_SIZE_PCT          = _env_int("LISTING_TIER_B_POSITION_SIZE_PCT", 40)
 
 # Post-confirm move: minimum % above breakout reference after confirmation (kills dead trades)
@@ -1067,6 +1067,12 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None):
                 listing_date_obj = listing_date
             
             days_since_listing = (today_date - listing_date_obj).days
+            
+            # Age-Dependent Close Confirmation: Downgrade breakout to WATCHLIST during trading hours if age < 5 days
+            if signal_type == 'BREAKOUT' and days_since_listing < 5 and _market_is_open_ist():
+                logger.info(f"⏳ Downgrading breakout on {symbol} to WATCHLIST (listing age {days_since_listing}d < 5d during market hours, requires EOD close verification)")
+                signal_type = 'WATCHLIST'
+                
             vol_vs_avg = (current_volume / avg_volume) if avg_volume > 0 else 0.0
 
             # --- Strict watchlist gate: same strategic lens as IPO momentum (no stale / dead-volume radar) ---
@@ -1207,11 +1213,15 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None):
                 # Passed strict checks — treat as high-quality (no LOW_VOL grade)
                 volume_warnings = []
             
-            # Stop loss % below entry (configurable via LISTING_STOP_LOSS_PCT)
-            stop_loss_pct = STOP_LOSS_PCT / 100.0
+            # 15-day Local Swing Low Stop Loss (capped at 12% max risk)
+            support = float(df['LOW'].tail(15).min())
+            struct_stop = support * 0.97
+            max_risk_stop = entry_price * 0.88
+            stop_loss = max(struct_stop, max_risk_stop)
             
-            # Calculate stop loss purely based on entry price percentage
-            stop_loss = entry_price * (1 - stop_loss_pct)
+            # Fallback to flat 8% stop if structural stop is invalid or above entry price
+            if stop_loss >= entry_price or pd.isna(stop_loss):
+                stop_loss = entry_price * 0.92
             
             # Target calculation: Use entry price + percentage of listing range
             if entry_above_high_pct <= 2.0:
@@ -1525,7 +1535,7 @@ def format_listing_breakout_alert(breakout_data):
 💰 <b>Trade Details:</b>
 • Current Price: ₹{current_price:,.2f} <i>({price_source})</i>
 • Entry Target: ₹{entry:,.2f}
-• Stop Loss: ₹{stop:,.2f} (-{STOP_LOSS_PCT:.0f}%)
+• Stop Loss: ₹{stop:,.2f} (-{((entry - stop) / entry * 100):.1f}%)
 • Target Obj: ₹{target:,.2f}
 • Risk:Reward: 1:{rr:.1f}
 
@@ -1595,7 +1605,7 @@ def format_base_breakout_alert(breakout_data):
 
 💰 <b>Trade Plan:</b>
 • Entry: ₹{entry:,.2f}  ({price_source})
-• Stop Loss: ₹{stop:,.2f}  ({STOP_LOSS_PCT:.0f}% below entry)
+• Stop Loss: ₹{stop:,.2f}  ({((entry - stop) / entry * 100):.1f}% below entry)
 • Target: ₹{target:,.2f}  (Listing Day High = natural target)
 • Risk:Reward: 1:{rr:.1f}
 • Post-Breakout Move: {post_move:+.2f}% above base high
@@ -2017,6 +2027,40 @@ def scan_listing_day_breakouts():
         logger.warning("No listing data available")
         return
     
+    # --- Cooldown / Reset listing status logic ---
+    try:
+        from db import positions_col
+        # For symbols whose status is currently 'BREAKOUT' or 'BASE_BREAKOUT',
+        # we check if they have any active positions. If not, and their last exit was >= 30 days ago,
+        # we reset their status back to 'ACTIVE' to allow re-entry.
+        inactive_symbols = listing_data[listing_data['status'].isin(['BREAKOUT', 'BASE_BREAKOUT'])]['symbol'].tolist()
+        if inactive_symbols:
+            logger.info(f"🔄 Evaluating {len(inactive_symbols)} symbols currently in breakout status for potential re-entry...")
+            for sym in inactive_symbols:
+                # Check if there is an active position in MongoDB positions collection
+                active_pos = positions_col.find_one({"symbol": sym, "status": "ACTIVE"})
+                if not active_pos:
+                    # Fetch closed positions for this symbol
+                    closed_pos = list(positions_col.find({"symbol": sym, "status": "CLOSED"}).sort("exit_date", -1).limit(1))
+                    if closed_pos:
+                        last_exit_date_str = closed_pos[0].get("exit_date")
+                        if last_exit_date_str:
+                            last_exit_date = pd.to_datetime(last_exit_date_str).date()
+                            days_since_exit = (datetime.today().date() - last_exit_date).days
+                            if days_since_exit >= 30:
+                                logger.info(f"✅ Resetting status of {sym} to ACTIVE (last exit was {days_since_exit} days ago, cooldown passed)")
+                                update_listing_status(sym, 'ACTIVE')
+                            else:
+                                logger.info(f"⏳ {sym} cooling down: {days_since_exit}/30 days passed since last exit on {last_exit_date_str}")
+                    else:
+                        # No closed position found but no active position either? Let's reset it to ACTIVE to be safe
+                        logger.info(f"✅ Resetting status of {sym} to ACTIVE (no positions found)")
+                        update_listing_status(sym, 'ACTIVE')
+            # Reload listing data if statuses changed
+            listing_data = load_listing_data()
+    except Exception as cooldown_e:
+        logger.error(f"Error checking listing breakout status cooldown: {cooldown_e}")
+
     # Filter for active listings
     active_listings = listing_data[listing_data['status'] == 'ACTIVE']
     
