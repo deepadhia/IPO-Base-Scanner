@@ -873,6 +873,7 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None):
             if not is_interesting: return
 
             _rejection_logged = True
+            would_have_triggered = bool(current_high is not None and current_high > listing_day_high)
             payload = {
                 "symbol": symbol,
                 "action": "REJECTED_BREAKOUT",
@@ -882,6 +883,8 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None):
                 "failing_value": round(value, 2),
                 "threshold": round(threshold, 2),
                 "base_zone_passed": True,
+                "would_have_triggered": would_have_triggered,
+                "future_20d_return": None,
                 "metrics": {
                     "perf": metrics.get("perf", None),
                     "prng": metrics.get("prng", None),
@@ -1222,6 +1225,11 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None):
             # Fallback to flat 8% stop if structural stop is invalid or above entry price
             if stop_loss >= entry_price or pd.isna(stop_loss):
                 stop_loss = entry_price * 0.92
+                
+            raw_stop_pct = ((entry_price - struct_stop) / entry_price * 100.0) if entry_price > 0 else 0.0
+            capped_stop_pct = ((entry_price - stop_loss) / entry_price * 100.0) if entry_price > 0 else 0.0
+            stop_type = "swing_low_cap12"
+            risk_cap_applied = bool(raw_stop_pct > 12.0)
             
             # Target calculation: Use entry price + percentage of listing range
             if entry_above_high_pct <= 2.0:
@@ -1476,6 +1484,10 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None):
                 'entry_vs_breakout_pct': round(entry_vs_breakout_pct, 2),
                 'signal_strength_score': score_comps['total_score'],
                 'score_components': score_comps,
+                'raw_stop_pct': round(raw_stop_pct, 2),
+                'capped_stop_pct': round(capped_stop_pct, 2),
+                'stop_type': stop_type,
+                'risk_cap_applied': risk_cap_applied,
                 # --- Institutional Liquidity Hardening (Phase 2.5) ---
                 'market_cap_cr': round(mcap_cr, 2),
                 'avg_turnover_cr': round(avg_turnover_cr, 2),
@@ -1768,6 +1780,10 @@ def save_breakout_signal(breakout_data):
             "did_hold_breakout_level": breakout_data.get("did_hold_breakout_level", True),
             "entry_vs_breakout_pct": breakout_data.get("entry_vs_breakout_pct", None),
             "signal_strength_score": breakout_data.get("signal_strength_score", None),
+            "raw_stop_pct": breakout_data.get("raw_stop_pct", None),
+            "capped_stop_pct": breakout_data.get("capped_stop_pct", None),
+            "stop_type": breakout_data.get("stop_type", None),
+            "risk_cap_applied": breakout_data.get("risk_cap_applied", False),
             # --- Score Components ---
             "tier_weight": breakout_data.get("score_components", {}).get("tier_weight", None),
             "volume_score": breakout_data.get("score_components", {}).get("volume_score", None),
@@ -1946,6 +1962,10 @@ def add_position(breakout_data):
             "strategy_version": "2.5.0-listing-day",
             "execution_version": "2.5.0-single-writer",
             "risk_model_version": "2.5.0-archetype-velocity",
+            "raw_stop_pct": breakout_data.get("raw_stop_pct", None),
+            "capped_stop_pct": breakout_data.get("capped_stop_pct", None),
+            "stop_type": breakout_data.get("stop_type", None),
+            "risk_cap_applied": breakout_data.get("risk_cap_applied", False),
             # Shadow SL tracking fields
             "shadow_sl_8pct": round(breakout_data['entry_price'] * 0.92, 2),
             "shadow_sl_10pct": round(breakout_data['entry_price'] * 0.90, 2),
