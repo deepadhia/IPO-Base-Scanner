@@ -49,7 +49,7 @@ spec.loader.exec_module(scanner_module)
 get_market_regime = scanner_module.get_market_regime
 classify_pattern_type = scanner_module.classify_pattern_type
 
-SCANNER_VERSION = "2.5.0"
+SCANNER_VERSION = "3.3.0"  # v3.3.0: Volume floor, base-duration guard fix, 20-day patience stop, Limit Buy alerts
 
 def write_daily_log(scanner_name, symbol, action, details=None, candle_timestamp=None, log_type="ACCEPTED"):
     """Write scanner telemetry to MongoDB only (single-write path)."""

@@ -123,6 +123,12 @@ jobs:
           LOOKAHEAD: ${{ vars.LOOKAHEAD || '80' }}
           MAX_DAYS: ${{ vars.MAX_DAYS || '200' }}
           MAX_FLAT_HOLD_WEEKS: ${{ vars.MAX_FLAT_HOLD_WEEKS || '20' }}
+          DEAD_MONEY_DAYS_IPO: ${{ vars.DEAD_MONEY_DAYS_IPO || '20' }}
+          DEAD_MONEY_RUNUP_IPO: ${{ vars.DEAD_MONEY_RUNUP_IPO || '4.0' }}
+          DEAD_MONEY_DAYS_CONSOL: ${{ vars.DEAD_MONEY_DAYS_CONSOL || '21' }}
+          DEAD_MONEY_RUNUP_CONSOL: ${{ vars.DEAD_MONEY_RUNUP_CONSOL || '5.0' }}
+          DEAD_MONEY_DAYS_OTHER: ${{ vars.DEAD_MONEY_DAYS_OTHER || '30' }}
+          DEAD_MONEY_RUNUP_OTHER: ${{ vars.DEAD_MONEY_RUNUP_OTHER || '5.0' }}
           CACHE_FILE: ${{ vars.CACHE_FILE || 'ipo_cache.pkl' }}
           LOG_LEVEL: ${{ vars.LOG_LEVEL || 'INFO' }}
           MONGO_URI: ${{ secrets.MONGO_URI }}
@@ -173,6 +179,12 @@ jobs:
           LOOKAHEAD: ${{ vars.LOOKAHEAD || '80' }}
           MAX_DAYS: ${{ vars.MAX_DAYS || '200' }}
           MAX_FLAT_HOLD_WEEKS: ${{ vars.MAX_FLAT_HOLD_WEEKS || '20' }}
+          DEAD_MONEY_DAYS_IPO: ${{ vars.DEAD_MONEY_DAYS_IPO || '20' }}
+          DEAD_MONEY_RUNUP_IPO: ${{ vars.DEAD_MONEY_RUNUP_IPO || '4.0' }}
+          DEAD_MONEY_DAYS_CONSOL: ${{ vars.DEAD_MONEY_DAYS_CONSOL || '21' }}
+          DEAD_MONEY_RUNUP_CONSOL: ${{ vars.DEAD_MONEY_RUNUP_CONSOL || '5.0' }}
+          DEAD_MONEY_DAYS_OTHER: ${{ vars.DEAD_MONEY_DAYS_OTHER || '30' }}
+          DEAD_MONEY_RUNUP_OTHER: ${{ vars.DEAD_MONEY_RUNUP_OTHER || '5.0' }}
           CACHE_FILE: ${{ vars.CACHE_FILE || 'ipo_cache.pkl' }}
           LOG_LEVEL: ${{ vars.LOG_LEVEL || 'INFO' }}
           MONGO_URI: ${{ secrets.MONGO_URI }}

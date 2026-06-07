@@ -12,7 +12,7 @@ Optimized IPO breakout scanner:
 - Dry-run and heartbeat modes
 """
 
-SCANNER_VERSION = "2.5.0"  # Behavioral Research Engine Upgrade
+SCANNER_VERSION = "3.3.0"  # v3.3.0: Volume floor, base-duration guard fix, 20-day patience stop, Limit Buy alerts
 LOG_SCHEMA_VERSION = "2026-04-23.v1"
 
 import os
@@ -916,7 +916,7 @@ MAX_ACTIVE_POSITIONS = get_env_int("MAX_ACTIVE_POSITIONS", 5)
 HARD_ACTIVE_POSITIONS = get_env_int("HARD_ACTIVE_POSITIONS", MAX_ACTIVE_POSITIONS + 2)
 
 # Dead-money speed gate thresholds by archetype
-DEAD_MONEY_DAYS_IPO = get_env_int("DEAD_MONEY_DAYS_IPO", 12)
+DEAD_MONEY_DAYS_IPO = get_env_int("DEAD_MONEY_DAYS_IPO", 20)
 DEAD_MONEY_RUNUP_IPO = get_env_float("DEAD_MONEY_RUNUP_IPO", 4.0)
 
 DEAD_MONEY_DAYS_CONSOL = get_env_int("DEAD_MONEY_DAYS_CONSOL", 21)
@@ -1083,7 +1083,7 @@ def send_telegram(msg):
     except Exception as e:
         logger.error(f"❌ Telegram error: {e}")
 
-def format_signal_alert(symbol, grade, entry_price, stop_loss, target_price, score, date, consolidation_low=None, consolidation_high=None, breakout_price=None, data_source=None, current_price=None, price_source=None, breakout_close=None, entry_note=None, pattern_type=None, market_regime=None):
+def format_signal_alert(symbol, grade, entry_price, stop_loss, target_price, score, date, consolidation_low=None, consolidation_high=None, breakout_price=None, data_source=None, current_price=None, price_source=None, breakout_close=None, entry_note=None, pattern_type=None, market_regime=None, listing_high=None):
     """Format detailed IPO signal alert with comprehensive trading information"""
     # Calculate risk metrics
     risk_amount = entry_price - stop_loss
@@ -1092,6 +1092,10 @@ def format_signal_alert(symbol, grade, entry_price, stop_loss, target_price, sco
     reward_percentage = (reward_amount / entry_price) * 100
     risk_reward_ratio = reward_amount / risk_amount if risk_amount > 0 else 0
     
+    # Calculate Limit Buy order price capped at 3.5% above listing high
+    lh_ref = listing_high or breakout_price or consolidation_high
+    limit_buy_price = lh_ref * 1.035 if lh_ref is not None else entry_price
+
     # Calculate position sizing (assuming 1% risk per trade)
     position_size_percent = 1.0  # 1% of portfolio
     position_size_amount = (position_size_percent * 100000) / risk_amount if risk_amount > 0 else 0  # Assuming 1L portfolio
@@ -1137,9 +1141,10 @@ def format_signal_alert(symbol, grade, entry_price, stop_loss, target_price, sco
 
 📊 Symbol: <b>{symbol}</b>
 {emoji} Grade: <b>{grade}</b> ({confidence} Confidence){price_info_section}
-💰 Entry Price: ₹{entry_price:,.2f}
+💰 Entry Price (Reference): ₹{entry_price:,.2f}
 🛑 Stop Loss: ₹{stop_loss:,.2f} ({risk_percentage:.1f}% risk)
 🎯 Target: ₹{target_price:,.2f} ({reward_percentage:.1f}% reward)
+🛒 Limit Buy Price: ₹{limit_buy_price:,.2f} (Capped at 3.5% above Listing Day High of ₹{lh_ref:,.2f})
 📊 Risk:Reward: 1:{risk_reward_ratio:.1f}
 📈 Expected Return: {reward_percentage:.1f}% ({win_rate} win rate)
 
@@ -1178,7 +1183,9 @@ def format_signal_alert(symbol, grade, entry_price, stop_loss, target_price, sco
 • Capital at risk: ₹{int(risk_amount * position_size_amount):,}
 
 📅 Signal Date: {date if isinstance(date, str) else date.strftime('%Y-%m-%d')}
-⚠️ <b>Action Required:</b> Enter position at market open"""
+⚠️ <b>Action Required:</b> Place a <b>Limit Buy Order</b> at <b>₹{limit_buy_price:,.2f}</b>.
+• If next-day opens below limit price, enter at open.
+• If next-day opens above limit price, wait for an intraday pullback to limit price."""
     
     return msg
 
@@ -1961,6 +1968,29 @@ def detect_live_patterns(symbols, listing_map):
         
         lhigh = df["HIGH"].iloc[0]
 
+        # Listing Volume Floor check
+        listing_day_volume = None
+        try:
+            from db import listing_data_col
+            if listing_data_col is not None:
+                doc = listing_data_col.find_one({"symbol": sym}, {"listing_day_volume": 1, "_id": 0})
+                if doc:
+                    listing_day_volume = doc.get("listing_day_volume")
+        except Exception as db_e:
+            logger.warning(f"Error checking listing_day_col for {sym}: {db_e}")
+            
+        if listing_day_volume is None:
+            listing_day_volume = float(df["VOLUME"].iloc[0]) if "VOLUME" in df.columns and len(df) > 0 else 0.0
+
+        if listing_day_volume < 150000:
+            write_daily_log("consolidation", sym, "REJECTED_BREAKOUT", {
+                "reason": "LISTING_VOLUME_BELOW_FLOOR",
+                "listing_day_volume": listing_day_volume,
+                "required_minimum": 150000
+            }, log_type="REJECTED")
+            logger.info(f"Skipping {sym} - listing day volume {listing_day_volume:,.0f} is below 150k floor")
+            continue
+
         # Nested w/i loops can hit the same breakout many times — log each rejection reason once per symbol per run
         _consolidation_reject_logged = set()
 
@@ -2107,6 +2137,12 @@ def detect_live_patterns(symbols, listing_map):
             # Check recent data for live patterns (last 10 days for better coverage)
             recent_start = max(w, len(df)-10)  # Check last 10 days for live patterns
             for j in range(recent_start, len(df)):
+                # Base Duration Floor Check: skip windows narrower than 3 days
+                # NOTE: checking 'w' not 'j' — j always starts at max(w, len(df)-10)
+                # which is always >= w >= smallest CONSOL_WINDOW. A guard on j < 3
+                # was unreachable dead code. We guard on the window size instead.
+                if w < 3:
+                    continue
                 # 1. Define immediate base O(N)
                 base_window = df.iloc[j-w:j]
                 if len(base_window) < w: continue
@@ -2759,6 +2795,10 @@ def detect_live_patterns(symbols, listing_map):
                     "days_held": 0,
                     "status": "ACTIVE",
                     "next_day_open": None,
+                    "version": SCANNER_VERSION,
+                    "strategy_version": "3.3.0-consolidation",
+                    "execution_version": "3.3.0-single-writer",
+                    "risk_model_version": "3.3.0-archetype-velocity",
                     # Shadow SL tracking fields
                     "shadow_sl_8pct": round(entry * 0.92, 2),
                     "shadow_sl_10pct": round(entry * 0.90, 2),
@@ -2935,6 +2975,29 @@ def detect_scan(symbols, listing_map):
         if df is None or df.empty: continue
         lhigh = df["HIGH"].iloc[0]
 
+        # Listing Volume Floor check
+        listing_day_volume = None
+        try:
+            from db import listing_data_col
+            if listing_data_col is not None:
+                doc = listing_data_col.find_one({"symbol": sym}, {"listing_day_volume": 1, "_id": 0})
+                if doc:
+                    listing_day_volume = doc.get("listing_day_volume")
+        except Exception as db_e:
+            logger.warning(f"Error checking listing_day_col for {sym}: {db_e}")
+            
+        if listing_day_volume is None:
+            listing_day_volume = float(df["VOLUME"].iloc[0]) if "VOLUME" in df.columns and len(df) > 0 else 0.0
+
+        if listing_day_volume < 150000:
+            write_daily_log("consolidation", sym, "REJECTED_BREAKOUT", {
+                "reason": "LISTING_VOLUME_BELOW_FLOOR",
+                "listing_day_volume": listing_day_volume,
+                "required_minimum": 150000
+            }, log_type="REJECTED")
+            logger.info(f"Skipping {sym} - listing day volume {listing_day_volume:,.0f} is below 150k floor")
+            continue
+
         _scan_reject_logged = set()
 
         def _log_scan_reject_once(details: dict):
@@ -2990,6 +3053,11 @@ def detect_scan(symbols, listing_map):
         for w in CONSOL_WINDOWS:
             if len(df) < w: continue
             for j in range(w, min(len(df), MAX_DAYS)):
+                # Base Duration Floor Check: skip windows narrower than 3 days
+                # NOTE: j always starts at w, so a guard on j < 3 would only fire
+                # when w < 3, which is the correct condition to check.
+                if w < 3:
+                    continue
                 # 1. Define immediate base O(N)
                 base_window = df.iloc[j-w:j]
                 if len(base_window) < w: continue
@@ -3245,9 +3313,9 @@ def detect_scan(symbols, listing_map):
                     "position_size_weight": size_mult,
                     "market_regime": _mr,
                     "version": SCANNER_VERSION, "scanner": "consolidation_scan",
-                    "strategy_version": "2.5.0-consolidation",
-                    "execution_version": "2.5.0-single-writer",
-                    "risk_model_version": "2.5.0-archetype-velocity"
+                    "strategy_version": "3.3.0-consolidation",
+                    "execution_version": "3.3.0-single-writer",
+                    "risk_model_version": "3.3.0-archetype-velocity"
                 }
                 
                 pos = {
@@ -3259,9 +3327,10 @@ def detect_scan(symbols, listing_map):
                     "winner_score": winner_info["winner_score"],
                     "position_size_weight": size_mult,
                     "market_regime": _mr,
-                    "strategy_version": "2.5.0-consolidation",
-                    "execution_version": "2.5.0-single-writer",
-                    "risk_model_version": "2.5.0-archetype-velocity",
+                    "version": SCANNER_VERSION,
+                    "strategy_version": "3.3.0-consolidation",
+                    "execution_version": "3.3.0-single-writer",
+                    "risk_model_version": "3.3.0-archetype-velocity",
                     # Shadow SL tracking fields
                     "shadow_sl_8pct": round(entry * 0.92, 2),
                     "shadow_sl_10pct": round(entry * 0.90, 2),
@@ -3347,7 +3416,8 @@ def detect_scan(symbols, listing_map):
                     consolidation_low=low, consolidation_high=high2, breakout_price=entry,
                     data_source=data_source, current_price=current_price_display, price_source=price_source_display,
                     pattern_type=_pt if '_pt' in locals() else None, 
-                    market_regime=_mr if '_mr' in locals() else None
+                    market_regime=_mr if '_mr' in locals() else None,
+                    listing_high=lhigh
                 )
                 # Add signal type and version to alert
                 signal_msg = signal_msg.replace("🎯 <b>IPO BREAKOUT SIGNAL</b>", 
@@ -3844,7 +3914,6 @@ def stop_loss_update_scan():
                     close_active_signal(sym, current_price, pnl, days_held, exit_reason)
                     exits_triggered += 1
                     
-                    # LOG: Position exit event — critical for month-end grade/exit-reason analysis
                     write_daily_log("positions", sym, "POSITION_CLOSED", {
                         "exit_reason": exit_reason,
                         "entry_price": round(entry_price, 2),
@@ -3859,6 +3928,11 @@ def stop_loss_update_scan():
                         "time_to_failure_days": time_to_failure_days,
                         "time_to_failure_min": time_to_failure_min,
                         "runup_before_drawdown_pct": round(new_max_runup, 2) if new_max_drawdown < 0 else None,
+                        # v3.3.0: position_version tracks the scanner version that OPENED this trade,
+                        # allowing analytics to distinguish legacy 2.5.0 positions from 3.3.0 positions
+                        # even though all new log entries carry SCANNER_VERSION = 3.3.0.
+                        "position_version": pos.get("version", "unknown"),
+                        "position_strategy_version": pos.get("strategy_version", "unknown"),
                     })
                     
                     # Send exit alert
@@ -3916,6 +3990,10 @@ def stop_loss_update_scan():
                         "market_regime": current_regime,
                         "winner_label": pos.get("winner_label", "MISSING"),
                         "exit_reason": None,
+                        # v3.3.0: position_version tracks which scanner version opened this trade
+                        # so daily snapshots remain queryable per-cohort even after version bumps.
+                        "position_version": pos.get("version", "unknown"),
+                        "position_strategy_version": pos.get("strategy_version", "unknown"),
                     })
 
                     # Count only real trailing-stop improvements as "updates"
@@ -3929,7 +4007,9 @@ def stop_loss_update_scan():
                             "current_price": round(current_price, 2),
                             "pnl_pct": round(pnl, 2),
                             "days_held": days_held,
-                            "grade": pos.get("grade", "?")
+                            "grade": pos.get("grade", "?"),
+                            "position_version": pos.get("version", "unknown"),
+                            "position_strategy_version": pos.get("strategy_version", "unknown"),
                         })
 
                         # Send position update alert only when stop-loss actually moves

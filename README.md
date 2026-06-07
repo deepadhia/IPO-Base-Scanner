@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Version](https://img.shields.io/badge/version-2.5.0-orange.svg)](https://github.com/Deep-Adhia/IPO-Base-Scanner)
+[![Version](https://img.shields.io/badge/version-3.3.0-orange.svg)](https://github.com/Deep-Adhia/IPO-Base-Scanner)
 [![Automated](https://img.shields.io/badge/automation-GitHub%20Actions-green.svg)](https://github.com/features/actions)
 
 This is **not** a simple breakout scanner.
@@ -29,9 +29,11 @@ Targets IPOs from listing day up to **730 calendar days (2 years)** post-listing
 
 **Flow & Key Rules:**
 1. **Age Constraint:** Filters out IPOs older than **730 days (2 years)** to focus strictly on high-velocity setups.
-2. **Stop Loss (15-Day Local Swing Low, 12% Risk Cap):** Dynamically calculates the stop loss based on the 15-day local swing low (buffered by 3%), capped at a tight maximum risk of **12%** to shield against large drawdowns.
-3. **Observation State:** Freshly listed symbols (<5 days old) entering breakout levels enter a `PENDING` state for **60 minutes** during market hours to verify EOD close confirmation.
-4. **Volume & Liquidity Floor:** Rejects signals with average daily turnover **< 1.0 Cr** or circuit days **≥ 3 in 15 sessions**.
+2. **Listing Volume Floor (v3.3.0):** IPOs whose listing-day traded volume was `< 150,000 shares` are rejected from Day 1 onwards. This removes illiquid listings that pass price filters but lack the institutional participation needed to sustain momentum. Day 0 (the actual listing day) is exempt since volume may not be fully settled in the DB yet.
+3. **Base Duration Floor (v3.3.0):** Standard breakouts require at least **3 trading days** of post-listing history before the scanner qualifies a signal. Prevents false breakout reads from single-day listing spikes.
+4. **Stop Loss (15-Day Local Swing Low, 12% Risk Cap):** Dynamically calculates the stop loss based on the 15-day local swing low (buffered by 3%), capped at a tight maximum risk of **12%** to shield against large drawdowns.
+5. **Observation State:** Freshly listed symbols (<5 days old) entering breakout levels enter a `PENDING` state for **60 minutes** during market hours to verify EOD close confirmation.
+6. **Volume & Liquidity Floor:** Rejects signals with average daily turnover **< 1.0 Cr** or circuit days **≥ 3 in 15 sessions**.
 
 ---
 
@@ -39,15 +41,17 @@ Targets IPOs from listing day up to **730 calendar days (2 years)** post-listing
 
 Targets IPOs **10–200 days post-listing** that have built a proper base structure and are breaking out of that base.
 
-**Scan windows:** `10, 20, 40, 80, 120` days (configurable)
+**Scan windows:** `5, 10, 20, 40, 80, 120` days (configurable)
 
 **Flow:**
-1. Symbol must be within `8–35%` below listing-day high (base formation range).
-2. Consolidation range must be `≤60%` (tight base, not chop).
-3. Breakout candle must **close** above the base high (no wick fakes).
-4. Volume must confirm via one of: `2.5x avg burst`, `VOL_MULT (1.2x)` rolling, or absolute `3M+ value`.
-5. Follow-through filter: next candle must hold base high ±2% **or** show 80%+ continuation volume.
-6. Grade and R:R checks filter further before signal emission.
+1. **Listing Volume Floor (v3.3.0):** Symbol must have had `≥ 150,000 shares` of listing-day volume. Checked before all other filters.
+2. Symbol must be within `8–35%` below listing-day high (base formation range).
+3. **Base Duration Floor (v3.3.0):** Consolidation window `w` must be `≥ 3` days. Prevents spuriously short base windows from generating signals.
+4. Consolidation range must be `≤60%` (tight base, not chop).
+5. Breakout candle must **close** above the base high (no wick fakes).
+6. Volume must confirm via one of: `2.5x avg burst`, `VOL_MULT (1.2x)` rolling, or absolute `3M+ value`.
+7. Follow-through filter: next candle must hold base high ±2% **or** show 80%+ continuation volume.
+8. Grade and R:R checks filter further before signal emission.
 
 ---
 
@@ -58,7 +62,7 @@ It is a tactical alerting layer and writes structured JSONL logs to the same dai
 
 ---
 
-## 💼 Portfolio Allocation & Risk Control (v2.5.0)
+## 💼 Portfolio Allocation & Risk Control (v3.3.0)
 
 ### 1. Portfolio Caps & `PAPER_ONLY` Gating
 To protect live capital, the system enforces a strict **Portfolio Cap Guard** (configurable via environment variable `MAX_ACTIVE_POSITIONS`, defaults to `5` active trades):
@@ -74,20 +78,32 @@ Market regimes (`BULL`, `WEAK_BULL`, `CORRECTION`, `RANGE`) are used purely as *
   * `BULL`: `1.0x` | `WEAK_BULL`: `0.75x` | `CORRECTION`: `0.5x` | `RANGE`: `0.5x`
 * The sizing weight is saved in the signal/position document (`position_size_weight`) and broadcasted in Telegram alerts (e.g. `⚖️ Regime Size Weight: 0.50x`).
 
-### 3. Archetype-Sensitive Dead-Money Speed Gate
-To maximize capital velocity and prevent capital from getting locked in flat breakout setups, the stop-loss trailing routine (`stop_loss_update_scan()`) applies time-based dead-money gates:
-* **IPO Discovery Breakouts (`grade == "LISTING_BREAKOUT"`):** If held for $\ge 12$ trading days and peak runup has never reached $\ge 4\%$, it is closed at the market with exit reason `"Time Stop - IPO Dead Money"`.
-* **Consolidation Breakouts:** If held for $\ge 21$ trading days and peak runup has never reached $\ge 5\%$, it is closed at the market with exit reason `"Time Stop - Consolidation Dead Money"`.
+### 3. Archetype-Sensitive Dead-Money Speed Gate (v3.3.0 — 20-Day Patience Stop)
+
+Research across the 2024–2026 Mainboard IPO universe confirmed that the previous 12-day time stop was cutting 84% of non-broken setups too early. The gate now uses a **20-day patience stop**:
+
+* **IPO Discovery Breakouts (`grade == "LISTING_BREAKOUT"`):** If held for **≥ 20 trading days** and peak runup has never reached **≥ 4%**, it is closed at the market with exit reason `"Time Stop - IPO Dead Money"`.
+* **Consolidation Breakouts:** If held for **≥ 21 trading days** and peak runup has never reached **≥ 5%**, it is closed at the market with exit reason `"Time Stop - Consolidation Dead Money"`.
+* **Winner Archetype Exempt:** Positions where `max_runup_pct ≥ 15%` are treated as confirmed momentum trades and are never cut by the patience stop.
+
+All thresholds are configurable via environment variables:
+```
+DEAD_MONEY_DAYS_IPO=20
+DEAD_MONEY_RUNUP_IPO=4.0
+DEAD_MONEY_DAYS_CONSOL=21
+DEAD_MONEY_RUNUP_CONSOL=5.0
+```
 
 ### 4. Market Regime Stabilizer (3-Day Confirmation)
 To prevent whipsaws during market transitions, Nifty-based regimes are stabilized chronologically:
 * **Stabilization Rule:** A new market regime classification is only confirmed and applied if it persists for **3 consecutive trading days**.
 * **Effect:** This time-based filter reduces regime whipsaws in backtests from **72.0% to 7.9%**, establishing a highly stable filter context.
 
-### 5. Forward-Testing Execution Baseline (Option A - Market on Open)
-To ensure 100% fill certainty during the 1-2 month paper test and eliminate execution uncertainty:
-* **Execution Rule:** Trades are simulated as entering at the **Next-Trading-Day Open** (`next_day_open`) rather than the breakout close.
-* **Telemetry Fields:** The scanner tracks both `breakout_close` (reference price) and `next_day_open` (execution price) in MongoDB signals and positions collections to audit slippage and compute true expectancy.
+### 5. Forward-Testing Execution Baseline (Limit Buy Order)
+All trade alerts now include a **Limit Buy Price** instruction:
+* **Limit Buy Price = Listing Day High × 1.035** (capped at 3.5% above listing high)
+* This sets a clear, bounded execution instruction that prevents chasing extended breakouts.
+* The Limit Buy price is displayed in every Telegram signal alert for both scanners.
 
 ---
 
@@ -97,6 +113,8 @@ The system rejects aggressively. A setup is terminated at the first failing cond
 
 | Filter | Reason Logged |
 |---|---|
+| Listing-day volume `< 150,000 shares` | `LISTING_VOLUME_BELOW_FLOOR` — illiquid listing |
+| Base history `< 3 trading days` | `BASE_DURATION_BELOW_MINIMUM` |
 | Price below `₹20.00` | `too_cheap` — avoid penny stock manipulation |
 | Daily Turnover `< ₹2.0 Cr` | `LIQUIDITY_TRAP` — avoid capital lock-in |
 | Market Cap `< ₹500 Cr` | `MICROCAP_PENALTY` — high manipulation risk |
@@ -133,6 +151,7 @@ Grades are assigned by the `compute_grade_hybrid()` scoring function (5 criteria
 | **C** | 1 | Medium (65%) | Min size — monitor closely |
 | **D** | 0 | Rejected | ❌ Never traded |
 
+
 > **Microcap Penalty (Phase 2.5)**: Any symbol with a Market Cap < ₹1000 Crore is automatically capped at **Grade C**, regardless of technical base quality, to enforce strict risk management on smaller counters.
 
 **5 scoring criteria:**
@@ -160,38 +179,37 @@ logs/
 Each JSONL entry is structured containing a flattened, Pandas-ready snapshot of all technical components:
 ```json
 {
-  "timestamp": "2026-05-08 14:14:00 IST",
-  "version": "2.5.0",
+  "timestamp": "2026-06-07 14:14:00 IST",
+  "version": "3.3.0",
   "log_schema_version": "2026-04-23.v1",
   "scanner": "consolidation",
   "symbol": "INOXINDIA",
   "action": "REJECTED_BREAKOUT",
   "log_type": "REJECTED",
   "details": {
-    "rejection_reason": "low_volume",
-    "failing_metric": "vol_ratio",
-    "failing_value": 0.95,
-    "threshold": 1.2,
-    "metrics": {
-      "perf": -0.12,
-      "prng": 15.5,
-      "vol_ratio": 0.95,
-      "rsi": 62.4,
-      "score": 3
-    }
+    "rejection_reason": "LISTING_VOLUME_BELOW_FLOOR",
+    "listing_day_volume": 120000,
+    "required_minimum": 150000
   }
 }
 ```
 
-*Because every log includes a standardized `metrics` snapshot and explicit `failing_metric` attribution, you can build high-fidelity distributions of near-misses to mathematically optimize your filters.*
+**v3.3.0 log fields added to all position lifecycle events** (`DAILY_SNAPSHOT`, `POSITION_CLOSED`, `TRAILING_STOP_UPDATED`):
 
-Daily summary snapshots may also be generated as:
+| Field | Description |
+|---|---|
+| `position_version` | Scanner version that **opened** the position (e.g. `"2.5.0"` or `"3.3.0"`) |
+| `position_strategy_version` | Strategy variant that opened it (e.g. `"2.5.0-consolidation"`) |
 
-```text
-logs/YYYY-MM-DD/daily_summary.json
+This allows analytics queries to cleanly separate pre-3.3.0 legacy positions from new positions even after the log-writer version bumped to 3.3.0.
+
+```python
+# MongoDB query to analyse only 3.3.0 positions:
+{"action": "DAILY_SNAPSHOT", "details.position_version": "3.3.0"}
+
+# MongoDB query to analyse legacy 2.5.0 positions running under new scanner:
+{"action": "DAILY_SNAPSHOT", "details.position_version": "2.5.0"}
 ```
-
-This file is **derived output**, not a source-of-truth input. The source remains JSONL logs.
 
 After 30 days this dataset allows answering:
 - Which grades actually hit their targets (win rate per grade)?
@@ -205,35 +223,27 @@ After 30 days this dataset allows answering:
 
 ```text
 IPO-Base-Scanner/
-├── streamlined_ipo_scanner.py       # Consolidation breakout scanner (v2.5.0)
-├── listing_day_breakout_scanner.py  # Listing day breakout scanner
-├── hourly_breakout_scanner.py       # Intraday watchlist scanner
+├── streamlined_ipo_scanner.py       # Consolidation breakout scanner (v3.3.0)
+├── listing_day_breakout_scanner.py  # Listing day breakout scanner (v3.3.0)
+├── hourly_breakout_scanner.py       # Intraday watchlist scanner (v3.3.0)
 │
-├── db.py                            # Core MongoDB persistence layer (v2.5.0)
+├── db.py                            # Core MongoDB persistence layer (v3.3.0)
 ├── fetch.py                         # Data acquisition (Upstox + YFinance)
 ├── master_audit.py                  # System integrity audit (Section 1/2/3)
 ├── manage_db.py                     # Unified management entrypoint
 │
-├── [Legacy — DELETED/DEPRECATED]
-│   ├── *.csv                        # All CSV files removed for MongoDB-only operation
-│   ├── *.pkl                        # Legacy pickle caches removed
-│
-└── logs/                            # derive output summary files (optional)
+└── logs/                            # Derived output summary files (optional)
 ```
 
 **⚠️ ARCHITECTURAL FREEZE**: As of v2.5.0, the system is strictly **MongoDB-only**. All CSV fallback paths have been purged to ensure a stationary, high-fidelity quant baseline.
 * **State Persistence**: Intraday pending breakout states (rejection and confirmation tracking) are persisted in MongoDB (`pending_states` collection) with disk fallback, ensuring stateless runners (e.g., GitHub Actions) can track observation windows reliably across runs.
 * **Timezone Safety**: Daily dates and timestamps are standardized to UTC midnight via IST extraction boundaries to prevent platform-timezone shifting bugs (the "1-day backwards" bug) across different runner locations.
-```
-
-- **Phase 3**: 3-Day Live Validation (Zero Failure Cutover).
-- **Phase 4**: Data Intelligence & Edge Extraction (Filter Optimization).
 
 ---
 
 ## 🧠 Institutional Analytics & Forensic Research
 
-Starting with **v2.3.0** the system grew a dedicated research layer. **v2.5.0** adds a self-auditing infrastructure layer on top.
+Starting with **v2.3.0** the system grew a dedicated research layer. **v3.3.0** refines the exit and entry rules based on systematic backtesting.
 
 ### 🏛️ The Modular Architecture (v2.4.x)
 
@@ -377,7 +387,13 @@ TELEGRAM_CHAT_ID=your_chat_id
 MIN_LIVE_GRADE=C         # Minimum grade for signal emission (D/C/B/A/A+)
 MIN_RISK_REWARD=1.3      # Minimum R:R ratio
 MIN_DAYS_BETWEEN_SIGNALS=10   # Cooldown window per symbol
-CONSOL_WINDOWS=10,20,40,80,120
+CONSOL_WINDOWS=5,10,20,40,80,120
+
+# v3.3.0 entry quality floors
+DEAD_MONEY_DAYS_IPO=20        # Patience stop for listing-day breakouts
+DEAD_MONEY_DAYS_CONSOL=21     # Patience stop for consolidation breakouts
+DEAD_MONEY_RUNUP_IPO=4.0      # Min runup % required to avoid patience stop
+DEAD_MONEY_RUNUP_CONSOL=5.0
 ```
 
 ### 4. Run Manually
@@ -445,7 +461,7 @@ python analyze_30d_data.py
 Recommended for clean-window analysis (non-destructive filters):
 
 ```bash
-python analyze_30d_data.py --start-date 2026-04-24 --version 2.1.0 --clean-cohort
+python analyze_30d_data.py --start-date 2026-06-07 --version 3.3.0 --clean-cohort
 ```
 
 The analysis script now uses a resilient read order for rejection metrics:
@@ -465,30 +481,57 @@ For experiment cutovers and baseline tracking, see `EXPERIMENT_CHANGELOG.md`.
 
 ## 📱 Alert Format (Telegram)
 
+### Consolidation Breakout Signal
 ```text
-🎯 IPO BREAKOUT SIGNAL
+🎯 CONSOLIDATION BREAKOUT SIGNAL
 
 📊 Symbol: SAATVIKGL
-⭐ Grade: A (High Confidence)
+🔥 Grade: B
 
 💰 Price Information:
-• Breakout Close (Reference): ₹446.90
-• Entry Price (Logged): ₹464.00
-• Price Source: Upstox Live
-• Entry Type: LIVE_INTRADAY — execution price may differ from breakout close.
+• Current/Live Price: ₹464.00
+• Entry Reference: ₹464.00 (Next Day Opening)
+• Price Source: 🚀 Upstox Live Price
 
-🛑 Stop Loss: ₹408.32 (12.0% risk)
-🎯 Target: ₹589.58 (27.1% reward)
-📊 Risk:Reward: 1:2.3
+🛑 Stop Loss: ₹408.32
+📈 Target: ₹589.58
+📅 Signal Date: 2026-06-07
 
-📋 Pattern Details:
-• Consolidation: ₹408.32 – ₹446.90
-• Breakout: ₹446.90
-• Score: 1.0/5
-• Consolidation Window: 80 days
-
-🤖 Scanner v2.5.0 | 2026-05-08 14:15 IST
+🤖 Scanner v3.3.0 | 2026-06-07 14:15 IST
 ```
+
+### Listing Day Breakout Signal
+```text
+🎯 LISTING DAY HIGH BREAKOUT!
+
+📊 SAATVIKGL
+📋 Signal Type: Listing Day Breakout
+
+🏆 TIER: A+  |  💰 Position Size: 60%
+
+💰 Trade Details:
+• Current Price: ₹464.00 (Upstox Live)
+• Entry Target: ₹464.00
+• Stop Loss: ₹408.32 (-12.0%)
+• Target Obj: ₹589.58
+• Limit Buy Price: ₹462.35 (Capped at 3.5% above Listing High of ₹447.00)
+• Risk:Reward: 1:2.3
+
+⚠️ Action Required: Place a Limit Buy Order at ₹462.35.
+
+🤖 Scanner v3.3.0 | 14:15 IST
+```
+
+---
+
+## 📋 Version History
+
+| Version | Date | Key Changes |
+|---|---|---|
+| **v3.3.0** | 2026-06-07 | Listing volume floor (≥150k shares), base-duration floor (≥3d), 20-day patience stop, Limit Buy order instructions in alerts, `position_version` log field for cohort separation |
+| **v2.5.0** | 2026-04-23 | MongoDB-only architecture, winner trait classification, forensic audit mode, master_audit.py |
+| **v2.4.0** | 2026-04-15 | Modular enrichment layer, lifecycle PnL reconstruction |
+| **v2.3.0** | 2026-04-01 | Institutional analytics research layer |
 
 ---
 
@@ -501,4 +544,4 @@ For experiment cutovers and baseline tracking, see `EXPERIMENT_CHANGELOG.md`.
 
 ---
 
-<sub>Built for systematic IPO momentum trading | v2.5.0 | Automated via GitHub Actions | MongoDB Atlas Infrastructure | Data-Driven Filter Optimization</sub>
+<sub>Built for systematic IPO momentum trading | v3.3.0 | Automated via GitHub Actions | MongoDB Atlas Infrastructure | Data-Driven Filter Optimization</sub>

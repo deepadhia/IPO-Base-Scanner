@@ -39,7 +39,7 @@ scanner_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(scanner_module)
 
 # Import version and logging utilities from main scanner
-SCANNER_VERSION = "2.5.0"
+SCANNER_VERSION = "3.3.0"  # v3.3.0: Volume floor, base-duration guard fix, 20-day patience stop, Limit Buy alerts
 write_daily_log = getattr(scanner_module, 'write_daily_log', lambda *a, **k: None)
 
 fetch_data = scanner_module.fetch_data
@@ -860,6 +860,31 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None):
         elif isinstance(listing_date, pd.Timestamp):
             listing_date = listing_date.date()
         
+        today_date = datetime.today().date()
+        days_since_listing = (today_date - listing_date).days
+
+        # Listing Volume Floor check
+        # Day-0 (days_since_listing == 0) is intentionally exempt: listing-day
+        # volume may not be fully settled in the DB yet, so we don't reject on Day 0.
+        if days_since_listing == 0:
+            logger.info(
+                f"[v3.3.0] Volume floor exempt on listing day (Day 0) for {symbol} "
+                f"— recorded listing_day_volume={listing_day_volume:,.0f}. "
+                f"Floor will apply from Day 1 onwards."
+            )
+        elif listing_day_volume < 150000:
+            logger.info(
+                f"⏭️ Skipping {symbol} — listing_day_volume={listing_day_volume:,.0f} < 150k floor "
+                f"(days_since_listing={days_since_listing})"
+            )
+            write_daily_log("listing_day", symbol, "REJECTED_BREAKOUT", {
+                "reason": "LISTING_VOLUME_BELOW_FLOOR",
+                "listing_day_volume": listing_day_volume,
+                "days_since_listing": days_since_listing,
+                "required_minimum": 150000
+            }, log_type="REJECTED")
+            return None
+
         # Standardized Rejection Telemetry (Phase 2.2)
         _rejection_logged = False
         def _log_listing_rejection(reason: str, value: float, threshold: float, metrics: dict):
@@ -1007,6 +1032,10 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None):
         volume_warnings = []  # Track volume-related warnings
         
         if current_high > listing_day_high:
+            if len(df) < 3:
+                logger.info(f"⏭️ Rejecting standard breakout for {symbol} because base history length {len(df)} < 3 trading days")
+                _log_listing_rejection("BASE_DURATION_BELOW_MINIMUM", len(df), 3, {"history_len": len(df)})
+                return None
             is_breakout = True
             signal_type = 'BREAKOUT'
             breakout_conditions.append(f"Price broke listing day high ({current_high:.2f} > {listing_day_high:.2f})")
@@ -1066,16 +1095,8 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None):
                 logger.info(f"⏭️ Skipping {symbol}: {rejection_reason}")
                 return None
             
-            # Days since listing (used for display + strict watchlist / breakout gates)
-            today_date = datetime.today().date()
-            if isinstance(listing_date, str):
-                listing_date_obj = pd.to_datetime(listing_date).date()
-            elif hasattr(listing_date, 'date'):
-                listing_date_obj = listing_date.date()
-            else:
-                listing_date_obj = listing_date
-            
-            days_since_listing = (today_date - listing_date_obj).days
+            # Days since listing (calculated at top of function)
+            pass
             
             # Age-Dependent Close Confirmation: Downgrade breakout to WATCHLIST during trading hours if age < 5 days
             if signal_type == 'BREAKOUT' and days_since_listing < 5 and _market_is_open_ist():
@@ -1543,6 +1564,9 @@ def format_listing_breakout_alert(breakout_data):
     volume_vs_listing_day = breakout_data.get('volume_vs_listing_day', 0)
     has_volume_caution = breakout_data.get('has_volume_caution', False)
     
+    lh_ref = listing_high
+    limit_buy_price = lh_ref * 1.035 if lh_ref is not None else entry
+    
     msg = f"""🎯 <b>LISTING DAY HIGH BREAKOUT!</b>
 
 📊 <b>{symbol}</b>
@@ -1563,6 +1587,7 @@ def format_listing_breakout_alert(breakout_data):
 • Entry Target: ₹{entry:,.2f}
 • Stop Loss: ₹{stop:,.2f} (-{((entry - stop) / entry * 100):.1f}%)
 • Target Obj: ₹{target:,.2f}
+• Limit Buy Price: ₹{limit_buy_price:,.2f} (Capped at 3.5% above Listing High of ₹{lh_ref:,.2f})
 • Risk:Reward: 1:{rr:.1f}
 
 📈 <b>Metrics:</b>
@@ -1585,7 +1610,7 @@ def format_listing_breakout_alert(breakout_data):
 
     msg += f"""
 
-⚡ <b>Action Required:</b> Consider entry based on tier size.
+⚠️ <b>Action Required:</b> Place a <b>Limit Buy Order</b> at <b>₹{limit_buy_price:,.2f}</b>.
 
 🤖 <i>Scanner v{SCANNER_VERSION} | {datetime.now().strftime('%H:%M IST')}</i>"""
     return msg
@@ -1773,9 +1798,9 @@ def save_breakout_signal(breakout_data):
             "scanner": "listing_day",
             "position_size_weight": size_mult,
             "market_regime": _mr,
-            "strategy_version": "2.5.0-listing-day",
-            "execution_version": "2.5.0-single-writer",
-            "risk_model_version": "2.5.0-archetype-velocity",
+            "strategy_version": "3.3.0-listing-day",
+            "execution_version": "3.3.0-single-writer",
+            "risk_model_version": "3.3.0-archetype-velocity",
             "leader_score": int(breakout_data.get("leader_score", 0)),
             # --- Tier fields (additive, backward-compatible) ---
             "tier": breakout_data.get("tier", ""),
@@ -1975,9 +2000,10 @@ def add_position(breakout_data):
             "next_day_open": None,
             "position_size_weight": size_mult,
             "market_regime": _mr,
-            "strategy_version": "2.5.0-listing-day",
-            "execution_version": "2.5.0-single-writer",
-            "risk_model_version": "2.5.0-archetype-velocity",
+            "version": SCANNER_VERSION,
+            "strategy_version": "3.3.0-listing-day",
+            "execution_version": "3.3.0-single-writer",
+            "risk_model_version": "3.3.0-archetype-velocity",
             "raw_stop_pct": breakout_data.get("raw_stop_pct", None),
             "capped_stop_pct": breakout_data.get("capped_stop_pct", None),
             "stop_type": breakout_data.get("stop_type", None),

@@ -4,9 +4,9 @@ This file tracks analysis and logging cutovers so experiment windows stay compar
 
 ## Current Active Baseline
 
-- `scanner_version`: `2.1.0`
+- `scanner_version`: `3.3.0`
 - `log_schema_version`: `2026-04-23.v1`
-- recommended clean analysis start: `2026-04-24`
+- recommended clean analysis start: `2026-06-07`
 
 ## Why this exists
 
@@ -17,15 +17,33 @@ This file tracks analysis and logging cutovers so experiment windows stay compar
 ## Analysis command (clean cohort)
 
 ```bash
-python analyze_30d_data.py --start-date 2026-04-24 --version 2.1.0 --clean-cohort
+python analyze_30d_data.py --start-date 2026-06-07 --version 3.3.0 --clean-cohort
 ```
 
 `--clean-cohort` excludes:
 - `signal_type == WATCHLIST`
 - grades containing `LOW_VOL`
 
-## Notable recent milestones
+## Querying mixed-version position logs
 
-- `2026-04-15`: lifecycle logging additions in positions pipeline
-- `2026-04-21`: granular telemetry integration for consolidation
-- `2026-04-23`: analysis filters and schema-aligned docs updates
+After the v3.3.0 bump, all new log entries carry `version = "3.3.0"` in the logs collection.
+Positions that were opened under `2.5.0` will still emit `3.3.0` log entries — but the log
+payload now includes `position_version` so you can cleanly separate cohorts:
+
+```python
+# MongoDB — only 3.3.0 positions in daily snapshots
+db.logs.find({"action": "DAILY_SNAPSHOT", "details.position_version": "3.3.0"})
+
+# MongoDB — legacy 2.5.0 positions still running under new scanner
+db.logs.find({"action": "DAILY_SNAPSHOT", "details.position_version": "2.5.0"})
+```
+
+## Notable milestones
+
+| Date | Version | Change |
+|---|---|---|
+| `2026-06-07` | `3.3.0` | Listing volume floor (≥150k), base-duration guard fix, 20-day patience stop, Limit Buy alerts, `position_version` log field |
+| `2026-04-23` | `2.5.0` | MongoDB-only architecture, forensic audit, winner trait classification |
+| `2026-04-21` | `2.4.x` | Granular telemetry integration for consolidation |
+| `2026-04-15` | `2.4.0` | Lifecycle logging additions in positions pipeline |
+| `2026-04-01` | `2.3.0` | Institutional analytics research layer |

@@ -1,12 +1,14 @@
-# Listing Day Breakout Scanner - Logic Summary (v2.5.0)
+# Listing Day Breakout Scanner - Logic Summary (v3.3.0)
 
-## Strict Quality Mode (Default — “Good Trades Only”)
+## Strict Quality Mode (Default — "Good Trades Only")
 
 The Listing Day Breakout Scanner runs in strict quality mode (`LISTING_STRICT_QUALITY=true` by default) to filter out market noise and capture only pristine institutional setups.
 
 | Check | Default Setting (Strict Mode) |
 | :--- | :--- |
 | **Max Days Since Listing** | ≤ `LISTING_MAX_DAYS_SINCE_LISTING` (**730 days / 2 years**) |
+| **Listing Volume Floor (v3.3.0)** | Listing-day traded volume ≥ **150,000 shares** (exempt on Day 0) |
+| **Base History Floor (v3.3.0)** | At least **3 trading days** of post-listing data required |
 | **Volume vs 10d Avg** | ≥ `LISTING_MIN_VOLUME_MULT` (**1.8×** to **2.0×** depending on Tier) |
 | **Volume vs Listing Day** | ≥ `LISTING_MIN_VOL_VS_LISTING` (**1.0×**) when listing volume > 0 |
 | **Volume (Listing Vol Missing)**| Today's volume ≥ `LISTING_MIN_VOL_MULT_WHEN_NO_LISTING_VOL` (**2.0×** avg) |
@@ -16,9 +18,11 @@ The Listing Day Breakout Scanner runs in strict quality mode (`LISTING_STRICT_QU
 
 ---
 
-## Deployed Strategy Rules (Final v2.5.0 Specification):
+## Deployed Strategy Rules (Final v3.3.0 Specification):
 
 ### 1. Entry & Breakout Levels
+* **Listing Volume Floor:** IPOs whose listing-day volume was `< 150,000 shares` are rejected outright from Day 1 onwards. Day 0 is exempt since volume may not be fully flushed to the DB yet — a `[v3.3.0]` info log is emitted when the exemption fires.
+* **Base History Floor:** A minimum of **3 completed trading days** post-listing is required before the scanner will consider a breakout signal. This prevents false reads from listing-day intraday spikes with no base context.
 * **Watchlist Proximity:** Tracks and alerts when a stock is within **5% below** its listing day high.
 * **Breakout Confirmations:** Triggers a breakout when current price/high breaks above the listing day high.
 * **Intraday Confirmation Gate:** If market is open, breakouts on IPOs less than 5 days old are held in `PENDING` state for **60 minutes** to prevent intraday whipsaw wicks.
@@ -44,20 +48,29 @@ The Listing Day Breakout Scanner runs in strict quality mode (`LISTING_STRICT_QU
   * Entry >5% above listing high → 50% of listing day range.
 * A minimum risk/reward ratio of **1:1.25** is enforced. Setups where the potential range expansion target does not justify the stop loss size are rejected.
 
+### 5. Limit Buy Order Instruction (v3.3.0)
+* Every Telegram alert now includes a **Limit Buy Price** calculated as:
+  `limit_buy_price = listing_day_high × 1.035`
+* This caps execution at 3.5% above the listing high, preventing runaway chasing.
+* The price is clearly labelled in the alert: `Place a Limit Buy Order at ₹{limit_buy_price}`.
+
 ---
 
 ## Example Scenarios:
 
 ### Scenario 1: Tight 15-day Swing Low Breakout (Accepted)
 * Listing Day High: ₹100
+* Listing Day Volume: 500,000 shares (≥ 150k floor ✅)
+* Days Since Listing: 45 days (≥ 3 days ✅)
 * 15-day Swing Low: ₹95 (3% buffer stop at ₹92.15)
 * Entry: ₹102 (2% above listing high)
-* Days Since Listing: 45 days
 * Risk: `(102 - 92.15) / 102 = 9.65%` (below 12% cap)
+* Limit Buy Price: ₹103.50 (3.5% above listing high)
 * Result: **✅ Accepted** - Stop loss placed at ₹92.15.
 
 ### Scenario 2: Wide Base Capped Breakout (Accepted with Cap)
 * Listing Day High: ₹100
+* Listing Day Volume: 200,000 shares (≥ 150k floor ✅)
 * 15-day Swing Low: ₹85 (3% buffer stop at ₹82.45)
 * Entry: ₹103 (3% above listing high)
 * Days Since Listing: 320 days (approx. 1 year base)
@@ -65,7 +78,13 @@ The Listing Day Breakout Scanner runs in strict quality mode (`LISTING_STRICT_QU
 * Capped Stop Loss: ₹90.64 (12% cap applied)
 * Result: **✅ Accepted** - Stop loss placed at ₹90.64 (12% risk limit).
 
-### Scenario 3: Stale IPO (Rejected)
+### Scenario 3: Illiquid Listing (Rejected by v3.3.0 Volume Floor)
+* Listing Day High: ₹100
+* Listing Day Volume: 80,000 shares (< 150k floor ❌)
+* Days Since Listing: 15 days
+* Result: **❌ Rejected** - `LISTING_VOLUME_BELOW_FLOOR`. Too illiquid to sustain momentum.
+
+### Scenario 4: Stale IPO (Rejected)
 * Listing Day High: ₹100
 * Entry: ₹102
 * Days Since Listing: 780 days (> 2 years old)

@@ -35,7 +35,7 @@ db_metrics = {
 }
 
 # Versioning and Safeguards
-SCANNER_VERSION = "2.5.0"
+SCANNER_VERSION = "3.3.0"  # v3.3.0: Volume floor, base-duration guard fix, 20-day patience stop, Limit Buy alerts
 MAX_DAILY_REJECTIONS = 500
 _rejection_guard_warned = False
 
