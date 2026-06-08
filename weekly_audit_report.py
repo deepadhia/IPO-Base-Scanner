@@ -901,6 +901,97 @@ def fix_pnl_mismatch(positions_col) -> list:
     return applied
 
 
+def fix_missing_signal_grade(signals_col, positions_col) -> list:
+    """
+    Fix #4: Backfill missing signal grade from the matching position record.
+    """
+    applied = []
+    if signals_col is None or positions_col is None:
+        return applied
+
+    # Find signals missing grade
+    sigs = list(signals_col.find(
+        {"$or": [
+            {"grade": {"$in": [None, "", "Unknown"]}},
+            {"grade": {"$exists": False}}
+        ]},
+        {"symbol": 1, "signal_id": 1, "_id": 0}
+    ))
+
+    for sig in sigs:
+        sym = sig.get("symbol")
+        sig_id = sig.get("signal_id")
+        if not sym:
+            continue
+
+        # Look up grade from positions
+        pos = positions_col.find_one({"symbol": sym}, {"grade": 1, "_id": 0})
+        if pos and pos.get("grade") and pos.get("grade") != "Unknown":
+            grade = pos["grade"]
+            query = {"signal_id": sig_id} if sig_id else {"symbol": sym}
+            try:
+                signals_col.update_one(query, {"$set": {"grade": grade}})
+                desc = f"[FIX:SIGNAL_GRADE] {sym}: backfilled grade='{grade}' from positions"
+                applied.append(desc)
+                print(f"  {desc}")
+            except Exception as e:
+                print(f"  [FIX:SIGNAL_GRADE] ERROR updating {sym}: {e}")
+
+    return applied
+
+
+def fix_missing_exit_reason(positions_col, signals_col) -> list:
+    """
+    Fix #5: Backfill missing/Unknown exit_reason for CLOSED positions.
+    Reconstructs them as 'Stop Loss' as all target positions are stop-loss/trailing-stop hit exits.
+    Also syncs to the signals collection.
+    """
+    applied = []
+    if positions_col is None:
+        return applied
+
+    docs = list(positions_col.find(
+        {
+            "status": "CLOSED",
+            "$or": [
+                {"exit_reason": {"$in": [None, "", "Unknown", "historical", "none"]}},
+                {"exit_reason": {"$exists": False}}
+            ]
+        },
+        {"symbol": 1, "signal_id": 1, "_id": 0}
+    ))
+
+    for doc in docs:
+        sym = doc.get("symbol", "UNKNOWN")
+        sig_id = doc.get("signal_id")
+        reason = "Stop Loss"
+
+        try:
+            positions_col.update_one(
+                {"symbol": sym, "status": "CLOSED"},
+                {"$set": {"exit_reason": reason}}
+            )
+
+            if sig_id and signals_col is not None:
+                signals_col.update_one(
+                    {"signal_id": sig_id},
+                    {"$set": {"exit_reason": reason}}
+                )
+            elif signals_col is not None:
+                signals_col.update_one(
+                    {"symbol": sym, "status": "CLOSED"},
+                    {"$set": {"exit_reason": reason}}
+                )
+
+            desc = f"[FIX:EXIT_REASON] {sym}: set exit_reason='{reason}'"
+            applied.append(desc)
+            print(f"  {desc}")
+        except Exception as e:
+            print(f"  [FIX:EXIT_REASON] ERROR for {sym}: {e}")
+
+    return applied
+
+
 # ─── Report Generation ────────────────────────────────────────────────────────
 
 def build_report(perf_data: dict, fixes_applied: list = None) -> str:
@@ -1188,6 +1279,20 @@ def main():
             print(f"  PnL:       reconciled {len(pnl_fixes)} closed position(s)")
         else:
             print("  PnL:       no reconciliation needed")
+
+        grade_fixes = fix_missing_signal_grade(signals_col, positions_col)
+        fixes_log.extend(grade_fixes)
+        if grade_fixes:
+            print(f"  Grade:     backfilled {len(grade_fixes)} signal(s)")
+        else:
+            print("  Grade:     no grade backfill needed")
+
+        exit_reason_fixes = fix_missing_exit_reason(positions_col, signals_col)
+        fixes_log.extend(exit_reason_fixes)
+        if exit_reason_fixes:
+            print(f"  Exit Reas: backfilled {len(exit_reason_fixes)} closed position(s)")
+        else:
+            print("  Exit Reas: no exit reason backfill needed")
 
         if fixes_log:
             print(f"\n[AUDIT] {len(fixes_log)} fix(es) applied.")
