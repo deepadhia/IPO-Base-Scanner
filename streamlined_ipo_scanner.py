@@ -1496,23 +1496,16 @@ def get_live_price_upstox(symbol):
         
         if response.status_code == 200:
             data = response.json()
-            if 'data' in data:
-                # Try both key formats
-                quote_key = f'NSE_EQ:{symbol}'
-                if quote_key in data['data']:
-                    quote = data['data'][quote_key]
-                    live_price = quote.get('last_price')
-                    ohlc = quote.get('ohlc', {})
-                    day_high = ohlc.get('high')
-                    if live_price:
-                        return float(live_price), (float(day_high) if day_high else float(live_price))
-                elif instrument_key in data['data']:
-                    quote = data['data'][instrument_key]
-                    live_price = quote.get('last_price')
-                    ohlc = quote.get('ohlc', {})
-                    day_high = ohlc.get('high')
-                    if live_price:
-                        return float(live_price), (float(day_high) if day_high else float(live_price))
+            if 'data' in data and data['data']:
+                # Iterate and match instrument_token to instrument_key to handle key mismatches
+                for res_key, info in data['data'].items():
+                    res_token = info.get('instrument_token')
+                    if res_token == instrument_key or res_key == instrument_key or res_key == f'NSE_EQ:{symbol}':
+                        live_price = info.get('last_price')
+                        ohlc = info.get('ohlc', {})
+                        day_high = ohlc.get('high')
+                        if live_price is not None:
+                            return float(live_price), (float(day_high) if day_high is not None else float(live_price))
         
         return None
     except Exception as e:
@@ -1541,7 +1534,9 @@ def get_live_price_yfinance(symbol):
         # Get current info (fastest method)
         info = ticker.fast_info
         if hasattr(info, 'lastPrice') and info.lastPrice:
-            return float(info.lastPrice)
+            lp = float(info.lastPrice)
+            dh = float(info.dayHigh) if hasattr(info, 'dayHigh') and info.dayHigh is not None else lp
+            return lp, dh
         
         # Fallback: Get latest quote
         data = ticker.history(period="1d", interval="1m")
@@ -2352,8 +2347,10 @@ def detect_live_patterns(symbols, listing_map):
                 # This ensures entry price matches what user would actually pay NOW
                 # Try multiple sources: Upstox -> yfinance -> jugaad-data -> latest close
                 live_price, price_source_name, _ = get_live_price(sym)
+                price_is_live = False
                 if live_price is not None:
                     entry = live_price
+                    price_is_live = True
                     source_emojis = {
                         'upstox': '🚀',
                         'yfinance': '📈',
@@ -2372,6 +2369,12 @@ def detect_live_patterns(symbols, listing_map):
                         latest_date_str = str(latest_date)
                     price_source = f"📊 Latest Close ({latest_date_str})"
                     logger.warning(f"⚠️ No live price available, using latest close: ₹{entry:.2f} from {latest_date_str}")
+                    price_is_live = False
+
+                # Stale Fallback Price Gate: block entry on stale fallback close prices
+                if not price_is_live:
+                    logger.warning(f"❌ Stale price fallback for {sym} (live sources failed). Blocking breakout signal entry to prevent false triggers.")
+                    continue
                 
                 # --- PRICE FLOOR GUARDRAIL ---
                 if entry < MIN_ENTRY_PRICE_RS:
@@ -3143,8 +3146,10 @@ def detect_scan(symbols, listing_map):
                 # This ensures entry price matches what user would actually pay NOW
                 # Try multiple sources: Upstox -> yfinance -> jugaad-data -> latest close
                 live_price, price_source_name, _ = get_live_price(sym)
+                price_is_live = False
                 if live_price is not None:
                     entry = live_price
+                    price_is_live = True
                     source_emojis = {
                         'upstox': '🚀',
                         'yfinance': '📈',
@@ -3163,6 +3168,12 @@ def detect_scan(symbols, listing_map):
                         latest_date_str = str(latest_date)
                     price_source = f"📊 Latest Close ({latest_date_str})"
                     logger.warning(f"⚠️ No live price available, using latest close: ₹{entry:.2f} from {latest_date_str}")
+                    price_is_live = False
+
+                # Stale Fallback Price Gate: block entry on stale fallback close prices
+                if not price_is_live:
+                    logger.warning(f"❌ Stale price fallback for {sym} (live sources failed). Blocking consolidation breakout signal entry to prevent false triggers.")
+                    continue
 
                 # --- PRICE FLOOR GUARDRAIL ---
                 # --- PRICE FLOOR GUARDRAIL ---

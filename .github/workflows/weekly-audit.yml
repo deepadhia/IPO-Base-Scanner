@@ -3,7 +3,7 @@ name: Weekly System Audit
 on:
   schedule:
     # Every Saturday at 9:00 PM IST (3:30 PM UTC)
-    - cron: '30 15 * * 6'
+    - cron: '41 15 * * 6'
   workflow_dispatch:
     inputs:
       run_fixes:

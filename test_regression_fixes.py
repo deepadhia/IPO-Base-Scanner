@@ -238,5 +238,105 @@ class TestRegressionFixes(unittest.TestCase):
         self.assertEqual(upserted_args[0]["next_day_open"], 108.0) # Monday open (post-holiday)
         self.assertEqual(upserted_args[1]["next_day_open"], 108.0) # Monday open (post-holiday)
 
+    @patch('streamlined_ipo_scanner.requests.get')
+    @patch('streamlined_ipo_scanner.os.getenv')
+    @patch('db.get_instrument_key_mapping')
+    def test_upstox_quote_instrument_token_matching(self, mock_mapping, mock_getenv, mock_get):
+        from streamlined_ipo_scanner import get_live_price_upstox
+        
+        # Setup mocks
+        mock_mapping.return_value = {"TEST": "NSE_EQ|INE123"}
+        mock_getenv.return_value = "fake_token"
+        
+        # Mock API response with key mismatch (key is NSE_EQ:TEST but instrument_token inside is NSE_EQ|INE123)
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "status": "success",
+            "data": {
+                "NSE_EQ:TEST": {
+                    "instrument_token": "NSE_EQ|INE123",
+                    "last_price": 125.5,
+                    "ohlc": {
+                        "high": 128.0
+                    }
+                }
+            }
+        }
+        mock_get.return_value = mock_resp
+        
+        # Test fetching
+        result = get_live_price_upstox("TEST")
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], 125.5)
+        self.assertEqual(result[1], 128.0)
+
+    @patch('streamlined_ipo_scanner.get_last_expected_data_date')
+    @patch('streamlined_ipo_scanner.get_live_price')
+    @patch('db.get_last_signal_date')
+    @patch('streamlined_ipo_scanner.RESEARCH_COHORTS')
+    @patch('streamlined_ipo_scanner.reject_quick_losers')
+    @patch('streamlined_ipo_scanner.compute_grade_hybrid')
+    @patch('streamlined_ipo_scanner.assign_grade')
+    @patch('streamlined_ipo_scanner.get_liquidity_metrics')
+    @patch('streamlined_ipo_scanner.classify_pattern_type')
+    def test_stale_fallback_price_gate(self, mock_pattern, mock_liq, mock_assign, mock_grade, mock_reject, mock_cohorts, mock_last_sig, mock_live_price, mock_expected):
+        # Imports
+        from streamlined_ipo_scanner import detect_live_patterns
+        
+        from datetime import timedelta
+        today = date.today()
+        # Setup mocks
+        mock_expected.return_value = today
+        mock_last_sig.return_value = None
+        mock_reject.return_value = False
+        mock_grade.return_value = (85.0, {})
+        mock_assign.return_value = "A"
+        mock_liq.return_value = (50.0, 0, 5000.0)
+        mock_pattern.return_value = "CONSOLIDATION"
+        
+        # Set cohort so that it passes
+        mock_cohorts.items.return_value = [
+            ("TEST_COHORT", {"min_window": 3, "max_prng": 15.0, "min_grade": "C", "vol_follow": 0.5})
+        ]
+        
+        # df with breakout candle at the end (index 9)
+        dates = pd.date_range(end=today, periods=10)
+        df = pd.DataFrame({
+            'DATE': dates,
+            'OPEN': [100.0]*10,
+            'HIGH': [110.0] + [108.0]*8 + [120.0], # Breakout today!
+            'LOW': [95.0]*10,
+            'CLOSE': [100.0]*9 + [115.0],
+            'VOLUME': [200000]*9 + [500000]
+        })
+        
+        # Case A: Live price fails (None, None, None) -> price_is_live is False
+        mock_live_price.return_value = (None, None, None)
+        
+        listing_map = {"TESTSTOCK": today - timedelta(days=70)}
+        
+        # Run detect_live_patterns - since price_is_live is False, it should block and return 0 signals
+        with patch('streamlined_ipo_scanner.fetch_data') as mock_fetch:
+            mock_fetch.return_value = df
+            signals_found = detect_live_patterns(["TESTSTOCK"], listing_map)
+            self.assertEqual(signals_found, 0)
+        
+        # Case B: Live price succeeds -> price_is_live is True
+        mock_live_price.return_value = (115.0, 'upstox', 120.0)
+        
+        # We need to mock Mongo calls inside detect_live_patterns when saving signals
+        with patch('db.upsert_signal') as mock_sig, patch('db.upsert_position') as mock_pos, patch('streamlined_ipo_scanner.MongoRepository') as mock_repo, patch('streamlined_ipo_scanner.LifecycleTracker') as mock_tracker, patch('streamlined_ipo_scanner.fetch_data') as mock_fetch:
+            mock_repo_inst = MagicMock()
+            mock_repo.return_value = mock_repo_inst
+            mock_repo_inst.save_signal.return_value = True
+            mock_fetch.return_value = df
+            
+            signals_found = detect_live_patterns(["TESTSTOCK"], listing_map)
+            # Should proceed because price is live
+            self.assertEqual(signals_found, 1)
+            self.assertTrue(mock_sig.called)
+            self.assertTrue(mock_pos.called)
+
 if __name__ == '__main__':
     unittest.main()

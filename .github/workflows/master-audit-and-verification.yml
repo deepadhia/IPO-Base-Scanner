@@ -2,7 +2,7 @@ name: Daily System Integrity Audit & Verification
 
 on:
   schedule:
-    - cron: '30 17 * * *'   # Daily at 11:00 PM IST (5:30 PM UTC)
+    - cron: '23 17 * * *'   # Daily at 10:53 PM IST (5:23 PM UTC)
   workflow_dispatch:
     inputs:
       environment:

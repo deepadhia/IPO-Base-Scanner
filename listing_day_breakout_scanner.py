@@ -950,6 +950,7 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None):
         current_price = None
         current_high = None
         price_source = "Historical Close"
+        price_is_live = False
         
         try:
             live_price, live_source, day_high = get_live_price(symbol)
@@ -957,6 +958,7 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None):
                 current_price = live_price
                 current_high = day_high if day_high else live_price
                 price_source = f"Live ({live_source})"
+                price_is_live = True
                 logger.info(f"✅ Using live price for {symbol} breakout detection: ₹{current_price:.2f} (High: ₹{current_high:.2f}) from {live_source}")
         except Exception as e:
             logger.debug(f"Could not get live price for {symbol}: {e}")
@@ -991,6 +993,7 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None):
             current_price = float(latest['CLOSE'])
             current_high = historical_high  # Use historical high
             price_source = f"Historical Close ({latest_date.strftime('%Y-%m-%d')})"
+            price_is_live = False
             
             # Warn if data is stale
             if days_old > 1:
@@ -1064,6 +1067,11 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None):
         
         # Proceed if price broke listing day high OR is watchlist
         if is_breakout:
+            # Stale Fallback Price Gate: prevent false breakout signals from stale prices
+            if not price_is_live and signal_type in ('BREAKOUT', 'BASE_BREAKOUT'):
+                logger.warning(f"❌ Stale price fallback for {symbol} (live sources failed). Blocking breakout signal generation to prevent false triggers.")
+                return None
+
             # Tracking vars for tier classification (populated below per path)
             base_range_high: float = 0.0
             perfect_base_ok: bool = False

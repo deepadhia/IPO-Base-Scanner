@@ -2,9 +2,9 @@ name: Biweekly DB Quality & Winner Pattern Analysis
 
 on:
   schedule:
-    # Every 2 weeks: 1st and 15th of the month at 8:00 PM IST (2:30 PM UTC)
-    - cron: '30 14 1 * *'   # 1st of every month
-    - cron: '30 14 15 * *'  # 15th of every month
+    # Every 2 weeks: 1st and 15th of the month at 7:47 PM IST (2:17 PM UTC)
+    - cron: '17 14 1 * *'   # 1st of every month
+    - cron: '17 14 15 * *'  # 15th of every month
   workflow_dispatch:         # Allow manual trigger at any time
 
 jobs:
