@@ -349,12 +349,31 @@ def audit_logic_integrity(positions_col):
                     "breach_pct":   round(breach_pct, 2)
                 })
 
-        # Shadow SL must be below entry
-        for pct in [8, 10, 12]:
+        # Shadow SL must be below peak price and match the trailing logic bounds
+        max_runup = _safe_float(doc.get("max_runup_pct", 0.0)) or 0.0
+        peak_price = ep * (1 + max_runup / 100.0) if ep else None
+        
+        for pct, factor in [(8, 0.92), (10, 0.90), (12, 0.88)]:
             skey = f"shadow_sl_{pct}pct"
             ssl  = _safe_float(doc.get(skey))
-            if ssl is not None and ep is not None and ssl >= ep:
-                shadow_sl_issues.append({"symbol": sym, "field": skey, "value": ssl, "entry": ep})
+            if ssl is not None and ep is not None:
+                initial_stop = round(ep * factor, 2)
+                expected_trailed = round(peak_price * factor, 2) if peak_price else initial_stop
+                
+                status_key = f"shadow_status_{pct}pct"
+                sstatus = doc.get(status_key, "ACTIVE")
+                
+                if sstatus == "ACTIVE":
+                    if ssl < initial_stop - 0.5:
+                        shadow_sl_issues.append({
+                            "symbol": sym, "field": skey, "value": ssl,
+                            "reason": f"Value {ssl} is below initial stop {initial_stop} (stop cannot trail down)"
+                        })
+                    elif ssl > expected_trailed + 0.5:
+                        shadow_sl_issues.append({
+                            "symbol": sym, "field": skey, "value": ssl,
+                            "reason": f"Value {ssl} exceeds maximum trailed stop {expected_trailed} based on peak runup"
+                        })
 
     if trailing_inverted:
         _err(SEC, f"{len(trailing_inverted)} ACTIVE position(s) have trailing_stop < stop_loss",
@@ -375,10 +394,10 @@ def audit_logic_integrity(positions_col):
         _ok(SEC, "No missed exits detected (all prices above stops or within tolerance)")
 
     if shadow_sl_issues:
-        _warn(SEC, f"{len(shadow_sl_issues)} shadow SL value(s) >= entry_price (invalid)",
-              {"items": shadow_sl_issues})
+        _err(SEC, f"{len(shadow_sl_issues)} shadow SL value(s) do not conform to expected trailing stop bounds",
+             {"items": shadow_sl_issues})
     else:
-        _ok(SEC, "All shadow SL values are below entry_price")
+        _ok(SEC, "All shadow SL values conform to expected trailing stop bounds")
 
 # ─── Section 4: Performance Gate ─────────────────────────────────────────────
 
@@ -756,32 +775,38 @@ def _estimate_trading_days_in_range(start: date, end: date) -> int:
 
 def fix_shadow_sl_above_entry(positions_col) -> list:
     """
-    Fix #1: Shadow SL fields that are >= entry_price.
-
-    Root cause: shadow_sl was computed from the original signal price before
-    entry_price was updated to the next-day MOO price. This recomputes them
-    from the actual stored entry_price using the same -8% / -10% / -12% factors.
-
-    Safe: additive correction only. No position status, trailing stop, or PnL
-    fields are touched. Shadow SL fields are research metadata — not live risk.
+    Fix #1: Shadow SL fields that are corrupt/incorrect based on trailing logic.
+    Recomputes the correct expected trailing stop loss from the entry_price and max_runup_pct.
     """
     applied = []
-    docs = list(positions_col.find({}, {"symbol": 1, "entry_price": 1,
+    docs = list(positions_col.find({}, {"symbol": 1, "entry_price": 1, "max_runup_pct": 1,
                                         "shadow_sl_8pct": 1, "shadow_sl_10pct": 1,
-                                        "shadow_sl_12pct": 1, "_id": 0}))
+                                        "shadow_sl_12pct": 1, "shadow_status_8pct": 1,
+                                        "shadow_status_10pct": 1, "shadow_status_12pct": 1,
+                                        "_id": 0}))
     for doc in docs:
         sym = doc.get("symbol", "UNKNOWN")
         ep  = _safe_float(doc.get("entry_price"))
         if ep is None or ep <= 0:
             continue
 
+        max_runup = _safe_float(doc.get("max_runup_pct", 0.0)) or 0.0
+        peak_price = ep * (1 + max_runup / 100.0)
+
         updates = {}
         for pct_label, factor in [("8pct", 0.92), ("10pct", 0.90), ("12pct", 0.88)]:
             field = f"shadow_sl_{pct_label}"
             stored = _safe_float(doc.get(field))
-            if stored is not None and stored >= ep:
-                correct = round(ep * factor, 2)
-                updates[field] = correct
+            status_field = f"shadow_status_{pct_label}"
+            sstatus = doc.get(status_field, "ACTIVE")
+            
+            if stored is not None and sstatus == "ACTIVE":
+                initial_stop = round(ep * factor, 2)
+                expected_trailed = round(peak_price * factor, 2)
+                
+                # If stored stop is below initial stop or exceeds peak trailed stop, correct it
+                if stored < initial_stop - 0.5 or stored > expected_trailed + 0.5:
+                    updates[field] = expected_trailed
 
         if updates:
             try:
@@ -789,7 +814,7 @@ def fix_shadow_sl_above_entry(positions_col) -> list:
                     {"symbol": sym},
                     {"$set": updates}
                 )
-                desc = f"[FIX:SHADOW_SL] {sym}: recomputed {list(updates.keys())} from entry_price={ep}"
+                desc = f"[FIX:SHADOW_SL] {sym}: updated {list(updates.keys())} using peak_price={round(peak_price, 2)}"
                 applied.append(desc)
                 print(f"  {desc}")
             except Exception as e:

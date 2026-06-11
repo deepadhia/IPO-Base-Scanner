@@ -3346,9 +3346,9 @@ def detect_scan(symbols, listing_map):
                     "shadow_sl_8pct": round(entry * 0.92, 2),
                     "shadow_sl_10pct": round(entry * 0.90, 2),
                     "shadow_sl_12pct": round(entry * 0.88, 2),
-                    "shadow_status_8pct": "ACTIVE" if not portfolio_full else "PAPER_ONLY",
-                    "shadow_status_10pct": "ACTIVE" if not portfolio_full else "PAPER_ONLY",
-                    "shadow_status_12pct": "ACTIVE" if not portfolio_full else "PAPER_ONLY",
+                    "shadow_status_8pct": "ACTIVE",
+                    "shadow_status_10pct": "ACTIVE",
+                    "shadow_status_12pct": "ACTIVE",
                     "shadow_exit_price_8pct": None,
                     "shadow_exit_price_10pct": None,
                     "shadow_exit_price_12pct": None,
@@ -3364,8 +3364,8 @@ def detect_scan(symbols, listing_map):
                 try:
                     from db import upsert_signal, upsert_position
                     upsert_signal(row.copy())
+                    upsert_position(pos.copy())
                     if not portfolio_full:
-                        upsert_position(pos.copy())
                         logger.info(f"✅ Opened ACTIVE trade for {sym} (Portfolio: {active_count + 1}, Soft Cap: {MAX_ACTIVE_POSITIONS}, Hard Cap: {HARD_ACTIVE_POSITIONS})")
                     else:
                         logger.warning(f"⏭️ Portfolio FULL ({active_count} active). Logged {sym} as PAPER_ONLY. (Soft Cap: {MAX_ACTIVE_POSITIONS}, Hard Cap: {HARD_ACTIVE_POSITIONS})")
@@ -3425,7 +3425,7 @@ def detect_scan(symbols, listing_map):
                 signal_msg = format_signal_alert(
                     sym, grade, entry, stop, target, score, date_str,
                     consolidation_low=low, consolidation_high=high2, breakout_price=entry,
-                    data_source=data_source, current_price=current_price_display, price_source=price_source_display,
+                    data_source=price_source_name, current_price=current_price_display, price_source=price_source_display,
                     pattern_type=_pt if '_pt' in locals() else None, 
                     market_regime=_mr if '_mr' in locals() else None,
                     listing_high=lhigh
@@ -3470,6 +3470,12 @@ def detect_scan(symbols, listing_map):
     detection_msg = '🎯 New signals detected! Check details above.' if signals_found > 0 else '✅ No new signals today - Market conditions normal.'
     
     # Send scan summary to Telegram
+    try:
+        from db import get_active_positions_count
+        active_positions_cnt = get_active_positions_count()
+    except Exception:
+        active_positions_cnt = 0
+
     summary_msg = f"""📊 <b>IPO Scanner Summary</b>
     
 🔍 <b>Scan Results:</b>
@@ -3480,7 +3486,7 @@ def detect_scan(symbols, listing_map):
 
 {detection_msg}
 
-📈 <b>Active Positions:</b> {get_active_positions_count()}"""
+📈 <b>Active Positions:</b> {active_positions_cnt}"""
     
     send_telegram(summary_msg)
     return signals_found
@@ -4278,6 +4284,7 @@ def heartbeat():
     """Send heartbeat to confirm scanner is alive"""
     logger.info("💓 Sending heartbeat...")
     try:
+        from db import get_active_positions_count
         active_positions = get_active_positions_count()
         message = f"💓 <b>Scanner Heartbeat</b>\n\n⏰ Time: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n📈 Active Positions: {active_positions}"
         logger.info(f"Heartbeat message: {message}")

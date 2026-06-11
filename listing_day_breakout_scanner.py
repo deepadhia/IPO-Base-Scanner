@@ -1978,10 +1978,6 @@ def add_position(breakout_data):
         except Exception:
             portfolio_full = False
 
-        if portfolio_full:
-            logger.warning(f"⏭️ Portfolio FULL ({active_count} active). Skipping live position write for {breakout_data['symbol']}. (Soft Cap: {scanner_module.MAX_ACTIVE_POSITIONS}, Hard Cap: {scanner_module.HARD_ACTIVE_POSITIONS})")
-            return True
-
         try:
             from db import has_active_position
             if has_active_position(breakout_data['symbol']):
@@ -2004,7 +2000,7 @@ def add_position(breakout_data):
             "trailing_stop": breakout_data['stop_loss'],
             "pnl_pct": 0,
             "days_held": 0,
-            "status": "ACTIVE",
+            "status": "ACTIVE" if not portfolio_full else "PAPER_ONLY",
             "next_day_open": None,
             "position_size_weight": size_mult,
             "market_regime": _mr,
@@ -2038,6 +2034,10 @@ def add_position(breakout_data):
         try:
             from db import upsert_position
             upsert_position(new_position.copy())
+            if not portfolio_full:
+                logger.info(f"✅ Added position for {breakout_data['symbol']}")
+            else:
+                logger.warning(f"⏭️ Portfolio FULL ({active_count} active). Added position as PAPER_ONLY for {breakout_data['symbol']}. (Soft Cap: {scanner_module.MAX_ACTIVE_POSITIONS}, Hard Cap: {scanner_module.HARD_ACTIVE_POSITIONS})")
         except Exception as db_e:
             logger.error(f"[MongoDB] position write FAILED for {breakout_data['symbol']}: {db_e}")
             try:
@@ -2046,7 +2046,6 @@ def add_position(breakout_data):
             except Exception:
                 pass
         
-        logger.info(f"✅ Added position for {breakout_data['symbol']}")
         return True
     
     except Exception as e:

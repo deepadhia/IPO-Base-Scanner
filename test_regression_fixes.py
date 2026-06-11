@@ -338,5 +338,121 @@ class TestRegressionFixes(unittest.TestCase):
             self.assertTrue(mock_sig.called)
             self.assertTrue(mock_pos.called)
 
+    def test_audit_logic_trailing_shadow_sl(self):
+        import weekly_audit_report
+        # Reset findings
+        weekly_audit_report.findings = []
+        weekly_audit_report.errors = []
+        weekly_audit_report.warnings = []
+        
+        mock_positions_col = MagicMock()
+        # Mock positions database call with:
+        # 1. Valid trailing stop (TIMEX - entry 337.95, current 455.95, max_runup_pct 36.36, shadow_sl_8pct 423.98)
+        # 2. Invalid stop (TESTFAIL - entry 100, current 100, max_runup_pct 0, shadow_sl_8pct 98 but status is ACTIVE and expected is 92)
+        mock_positions_col.find.return_value = [
+            {
+                "symbol": "TIMEX",
+                "status": "ACTIVE",
+                "entry_price": 337.95,
+                "current_price": 455.95,
+                "max_runup_pct": 36.36,
+                "stop_loss": 310.91,
+                "trailing_stop": 310.91,
+                "shadow_sl_8pct": 423.98,
+                "shadow_status_8pct": "ACTIVE"
+            },
+            {
+                "symbol": "TESTFAIL",
+                "status": "ACTIVE",
+                "entry_price": 100.0,
+                "current_price": 100.0,
+                "max_runup_pct": 0.0,
+                "stop_loss": 92.0,
+                "trailing_stop": 92.0,
+                "shadow_sl_8pct": 98.0, # Expected is 92.0, so this exceeds expected
+                "shadow_status_8pct": "ACTIVE"
+            }
+        ]
+        
+        # Run audit_logic_integrity
+        weekly_audit_report.audit_logic_integrity(mock_positions_col)
+        
+        # We should find that TIMEX is valid, but TESTFAIL is flagged with error/warning
+        issues_found = [f for f in weekly_audit_report.findings if f["level"] == "ERROR" and "TESTFAIL" in str(f.get("detail"))]
+        timex_issues = [f for f in weekly_audit_report.findings if f["level"] == "ERROR" and "TIMEX" in str(f.get("detail"))]
+        
+        self.assertEqual(len(timex_issues), 0)
+        self.assertEqual(len(issues_found), 1)
+
+    @patch('streamlined_ipo_scanner.get_last_expected_data_date')
+    @patch('streamlined_ipo_scanner.get_live_price')
+    @patch('db.get_last_signal_date')
+    @patch('streamlined_ipo_scanner.RESEARCH_COHORTS')
+    @patch('streamlined_ipo_scanner.reject_quick_losers')
+    @patch('streamlined_ipo_scanner.compute_grade_hybrid')
+    @patch('streamlined_ipo_scanner.assign_grade')
+    @patch('streamlined_ipo_scanner.get_liquidity_metrics')
+    @patch('streamlined_ipo_scanner.classify_pattern_type')
+    @patch('db.positions_col')
+    def test_paper_only_position_persistence(self, mock_positions_col, mock_pattern, mock_liq, mock_assign, mock_grade, mock_reject, mock_cohorts, mock_last_sig, mock_live_price, mock_expected):
+        from streamlined_ipo_scanner import detect_live_patterns
+        import streamlined_ipo_scanner
+        
+        from datetime import timedelta
+        today = date.today()
+        # Setup mocks
+        mock_expected.return_value = today
+        mock_last_sig.return_value = None
+        mock_reject.return_value = False
+        mock_grade.return_value = (85.0, {})
+        mock_assign.return_value = "A"
+        mock_liq.return_value = (50.0, 0, 5000.0)
+        mock_pattern.return_value = "CONSOLIDATION"
+        
+        # Force active count above hard cap (portfolio_full is True) but has_active_position(TESTSTOCK) is False
+        def mock_count_docs(query, **kwargs):
+            if query.get("symbol") == "TESTSTOCK":
+                return 0
+            if query.get("status") == "ACTIVE":
+                return 10
+            return 0
+        mock_positions_col.count_documents.side_effect = mock_count_docs
+        
+        mock_cohorts.items.return_value = [
+            ("TEST_COHORT", {"min_window": 3, "max_prng": 15.0, "min_grade": "C", "vol_follow": 0.5})
+        ]
+        
+        # df with breakout candle at the end
+        dates = pd.date_range(end=today, periods=10)
+        df = pd.DataFrame({
+            'DATE': dates,
+            'OPEN': [100.0]*10,
+            'HIGH': [110.0] + [108.0]*8 + [120.0],
+            'LOW': [95.0]*10,
+            'CLOSE': [100.0]*9 + [115.0],
+            'VOLUME': [200000]*9 + [500000]
+        })
+        
+        # Live price succeeds
+        mock_live_price.return_value = (115.0, 'upstox', 120.0)
+        from streamlined_ipo_scanner import detect_scan
+        listing_map = {"TESTSTOCK": today - timedelta(days=70)}
+        
+        with patch('db.upsert_signal') as mock_sig, patch('db.upsert_position') as mock_pos, patch('streamlined_ipo_scanner.MongoRepository') as mock_repo, patch('streamlined_ipo_scanner.LifecycleTracker') as mock_tracker, patch('streamlined_ipo_scanner.fetch_data') as mock_fetch:
+            mock_repo_inst = MagicMock()
+            mock_repo.return_value = mock_repo_inst
+            mock_repo_inst.save_signal.return_value = True
+            mock_fetch.return_value = df
+            
+            detect_scan(["TESTSTOCK"], listing_map)
+            
+            # Position should still be upserted even though portfolio_full was True
+            self.assertTrue(mock_pos.called)
+            
+            # Verify position arguments: status must be PAPER_ONLY and shadow stops ACTIVE
+            pos_args = mock_pos.call_args[0][0]
+            self.assertEqual(pos_args["status"], "PAPER_ONLY")
+            self.assertEqual(pos_args["shadow_status_8pct"], "ACTIVE")
+
 if __name__ == '__main__':
     unittest.main()
