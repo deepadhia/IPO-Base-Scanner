@@ -3463,7 +3463,7 @@ def detect_scan(symbols, listing_map):
     except Exception:
         db_stats = {"symbols_processed": symbols_processed, "signals_found": signals_found}
 
-    write_daily_log("scanner", "SYSTEM", "SCAN_COMPLETED", db_stats)
+    write_daily_log("consolidation", "SYSTEM", "SCAN_COMPLETED", db_stats)
 
     # Pre-calculate summary strings to avoid complex nested f-strings
     db_status = '✅ OK' if db_stats.get('db_failures', 0) == 0 else f"❌ {db_stats.get('db_failures')} FAILURES"
