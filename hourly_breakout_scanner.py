@@ -48,36 +48,13 @@ spec.loader.exec_module(scanner_module)
 # Import shared utilities
 get_market_regime = scanner_module.get_market_regime
 classify_pattern_type = scanner_module.classify_pattern_type
+get_live_price = scanner_module.get_live_price
+is_market_day = getattr(scanner_module, 'is_market_day', lambda: True)
+write_daily_log = scanner_module.write_daily_log  # Use shared writer — prevents version drift
 
 SCANNER_VERSION = "3.3.0"  # v3.3.0: Volume floor, base-duration guard fix, 20-day patience stop, Limit Buy alerts
 
-def write_daily_log(scanner_name, symbol, action, details=None, candle_timestamp=None, log_type="ACCEPTED"):
-    """Write scanner telemetry to MongoDB only (single-write path)."""
-    try:
-        from datetime import timezone, timedelta as td
-        ist = timezone(td(hours=5, minutes=30))
-        now_ist = datetime.now(ist)
-
-        # DB-only write: use provided candle_timestamp if available, else fall back to now_ist
-        try:
-            from db import insert_log
-            effective_candle_ts = candle_timestamp if candle_timestamp is not None else now_ist
-            insert_log(
-                scanner=scanner_name, symbol=symbol, action=action,
-                candle_timestamp=effective_candle_ts,
-                details=details or {}, version=SCANNER_VERSION, source="live",
-                log_type=log_type
-            )
-        except Exception as db_e:
-            logger.error(f"[MongoDB] log write FAILED for {symbol}/{action}: {db_e}")
-            try:
-                from db import db_metrics
-                db_metrics["failures"] = db_metrics.get("failures", 0) + 1
-            except Exception:
-                pass
-
-    except Exception as e:
-        logger.debug(f"Could not write daily log: {e}")
+# write_daily_log is now imported from scanner_module above (shared writer).
 
 def send_telegram(msg):
     """Send Telegram notification"""
@@ -239,27 +216,36 @@ def fetch_intraday_data_upstox(symbol, interval=INTRADAY_INTERVAL):
             if 'data' in data and 'candles' in data['data']:
                 candles = data['data']['candles']
                 if candles:
-                    # Convert to DataFrame
-                    df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close'])
+                    # P0-7 Fix: Upstox returns 7 fields [ts, open, high, low, close, volume, oi].
+                    # Previous code had duplicate 'close' column causing ValueError on rename.
+                    # Use safe rename pattern that is robust to field count changes.
+                    raw_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume', 'oi']
+                    # Pad or trim to match actual number of columns returned
+                    actual_cols = raw_cols[:len(candles[0])] if candles else raw_cols
+                    df = pd.DataFrame(candles, columns=actual_cols)
                     
                     # Handle timestamp conversion
                     try:
                         df['DATE'] = pd.to_datetime(df['timestamp'], unit='s')
-                    except:
+                    except Exception:
                         try:
                             df['DATE'] = pd.to_datetime(df['timestamp'])
-                        except:
+                        except Exception:
                             df['DATE'] = pd.to_datetime(df['timestamp'], format='%Y-%m-%d %H:%M:%S')
                     
-                    df.columns = ['timestamp', 'OPEN', 'HIGH', 'LOW', 'CLOSE', 'VOLUME', 'IGNORE', 'DATE']
+                    # Rename OHLCV columns explicitly — safe regardless of extra cols
+                    df = df.rename(columns={
+                        'open': 'OPEN', 'high': 'HIGH', 'low': 'LOW',
+                        'close': 'CLOSE', 'volume': 'VOLUME'
+                    })
                     df = df[['DATE', 'OPEN', 'HIGH', 'LOW', 'CLOSE', 'VOLUME']]
                     df['LTP'] = df['CLOSE']
                     
-                    # Ensure DATE is datetime (should already be, but verify for consistency)
+                    # Ensure DATE is datetime
                     if not pd.api.types.is_datetime64_any_dtype(df['DATE']):
                         df['DATE'] = pd.to_datetime(df['DATE'])
                     
-                    # Sort by date (ascending - oldest to newest)
+                    # Sort ascending (oldest to newest)
                     df = df.sort_values('DATE').reset_index(drop=True)
                     
                     logger.info(f"✅ Got {len(df)} intraday candles for {symbol}")
@@ -331,17 +317,12 @@ def detect_intraday_breakout(df, symbol):
         current_volume = recent_df['VOLUME'].iloc[-1]
         avg_volume = historical_df['VOLUME'].mean() if len(historical_df) > 0 else current_volume
         
-        # CRITICAL: Get LIVE price for accurate breakout detection
+        # CRITICAL: Get LIVE price for accurate breakout detection.
+        # P0-6 Fix: Use module-level get_live_price (imported at top) instead of
+        # re-loading the entire scanner_module per symbol call (was O(N) module loads).
         live_price = None
         live_source = "Historical"
         try:
-            # Import get_live_price from main scanner
-            import importlib.util
-            spec = importlib.util.spec_from_file_location("scanner", "streamlined_ipo_scanner.py")
-            scanner_module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(scanner_module)
-            get_live_price = scanner_module.get_live_price
-            
             live_price, live_source, _ = get_live_price(symbol)
             if live_price is not None and live_price > 0:
                 logger.info(f"✅ Using live price for {symbol} breakout detection: ₹{live_price:.2f} ({live_source})")
@@ -390,11 +371,13 @@ def detect_intraday_breakout(df, symbol):
             # Entry price: Use LIVE price if available, otherwise current price
             entry_price = current_price
             
-            # Stop loss (below consolidation low) - use proper calculation
-            # Use the lower (more conservative) stop loss: 2% below consolidation low OR 5% of range below, whichever is LOWER
-            stop_loss_1 = consolidation_low * 0.98  # 2% below consolidation low
+            # Stop loss (below consolidation low)
+            stop_loss_1 = consolidation_low * 0.98   # 2% below consolidation low
             stop_loss_2 = consolidation_low - (consolidation_range * 0.05)  # 5% of range below
-            stop_loss = min(stop_loss_1, stop_loss_2)  # Use the lower (more conservative) stop
+            # P1-6 Fix: Apply hard 10% risk cap to prevent excessive stop distances
+            # on wide consolidation ranges. Consistent with consolidation scanner cap.
+            max_risk_stop = entry_price * 0.90
+            stop_loss = max(min(stop_loss_1, stop_loss_2), max_risk_stop)
             
             # Target (based on consolidation range) - add 50% of range above consolidation high
             target_price = consolidation_high + (consolidation_range * 0.5)
@@ -502,19 +485,15 @@ def save_breakout_signal(breakout_data):
         signal_date = candle_ts.date() if hasattr(candle_ts, 'date') else datetime.now().date()
         signal_id = f"INTRADAY_{breakout_data['symbol']}_{signal_date.strftime('%Y%m%d')}_{candle_time}"
         
-        # Check if we already have a signal for this symbol today
+        # P1-5 Fix: Use signal_exists(signal_id) for deduplication — consistent with other
+        # scanners and avoids cross-type collisions (e.g. WATCHLIST blocking INTRADAY).
         try:
-            from db import signals_col
-            if signals_col is not None:
-                existing = signals_col.count_documents({
-                    "symbol": breakout_data['symbol'],
-                    "signal_date": signal_date.strftime('%Y-%m-%d') if isinstance(signal_date, datetime) else str(signal_date)
-                })
-                if existing > 0:
-                    logger.info(f"Signal already exists for {breakout_data['symbol']} today")
-                    return False
+            from db import signal_exists
+            if signal_exists(signal_id):
+                logger.info(f"Signal already exists for {breakout_data['symbol']} today ({signal_id})")
+                return False
         except Exception as e:
-            logger.warning(f"Error checking MongoDB for existing signals: {e}")
+            logger.warning(f"Error checking MongoDB for existing signal: {e}")
         
         # Create new signal
         new_signal = {
@@ -535,19 +514,42 @@ def save_breakout_signal(breakout_data):
             "scanner": "hourly_breakout_scanner"
         }
         
-        # MongoDB write: signal
+        # Create new position
+        new_position = {
+            "signal_id": signal_id,
+            "symbol": breakout_data['symbol'],
+            "entry_date": signal_date.strftime('%Y-%m-%d') if hasattr(signal_date, 'strftime') else str(signal_date),
+            "entry_price": breakout_data['entry_price'],
+            "grade": "INTRADAY",
+            "current_price": breakout_data['entry_price'],
+            "stop_loss": breakout_data['stop_loss'],
+            "trailing_stop": breakout_data['stop_loss'],
+            "pnl_pct": 0,
+            "days_held": 0,
+            "status": "ACTIVE",
+            "next_day_open": None,
+            "version": SCANNER_VERSION,
+            "strategy_version": SCANNER_VERSION,
+            "exit_version": SCANNER_VERSION,
+            "execution_version": "3.3.0-single-writer",
+            "risk_model_version": "3.3.0-archetype-velocity",
+        }
+        
+        # MongoDB write: signal and position atomically
         try:
-            from db import upsert_signal
+            from db import upsert_signal, upsert_position
             upsert_signal(new_signal.copy())
+            upsert_position(new_position.copy())
         except Exception as db_e:
-            logger.error(f"[MongoDB] signal write FAILED for {signal_id}: {db_e}")
+            logger.error(f"[MongoDB] DB write FAILED for {signal_id}: {db_e}")
             try:
                 from db import db_metrics
                 db_metrics["failures"] = db_metrics.get("failures", 0) + 1
             except Exception:
                 pass
+            return False
         
-        logger.info(f"✅ Saved breakout signal for {breakout_data['symbol']}")
+        logger.info(f"✅ Saved breakout signal and position for {breakout_data['symbol']}")
         return True
     
     except Exception as e:
@@ -666,7 +668,21 @@ def main():
     print(f"📅 Date: {datetime.now().strftime('%Y-%m-%d')}")
     print(f"⏰ Time: {datetime.now().strftime('%H:%M:%S')}")
     print("=" * 60)
-    
+
+    # P1-4 Fix: Skip on NSE holidays/weekends — avoids wasted API calls.
+    # Consistent with consolidation and listing scanner guards.
+    if not is_market_day():
+        from datetime import timezone, timedelta as td
+        ist = timezone(td(hours=5, minutes=30))
+        today_ist = datetime.now(ist).strftime("%Y-%m-%d")
+        logger.info(f"📅 Market is closed today ({today_ist}). Skipping hourly scan.")
+        send_telegram(
+            f"📅 <b>Market Holiday / Non-Trading Day</b>\n\n"
+            f"🗓 Date: {today_ist}\n"
+            f"⏭ Hourly scanner skipped — NSE is closed today."
+        )
+        return
+
     scan_watchlist()
 
 if __name__ == "__main__":

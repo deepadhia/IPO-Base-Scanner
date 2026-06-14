@@ -886,19 +886,28 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None):
             return None
 
         # Standardized Rejection Telemetry (Phase 2.2)
+        # P0-5 Fix: Initialize current_high to 0.0 (safe sentinel) before the closure is
+        # defined. The closure captures this variable by reference; the first calls to
+        # _log_listing_rejection happen at the liquidity checks below, BEFORE current_high
+        # is assigned from the live price fetch. Without this init, current_high is None
+        # and the `current_high >= listing_day_high * 0.90` comparison raises a TypeError
+        # that is silently swallowed, causing all liquidity rejections to go unlogged.
+        current_high = 0.0  # Will be overwritten by live price fetch below
         _rejection_logged = False
         def _log_listing_rejection(reason: str, value: float, threshold: float, metrics: dict):
             nonlocal _rejection_logged
             if _rejection_logged: return
             
             # Near-miss filter for listing day: within 10% of high
+            # current_high is 0.0 until the live price fetch runs; if it's still 0.0
+            # the filter safely skips (not interesting) rather than crashing.
             is_interesting = (
-                current_high >= listing_day_high * 0.90
+                current_high > 0 and current_high >= listing_day_high * 0.90
             )
             if not is_interesting: return
 
             _rejection_logged = True
-            would_have_triggered = bool(current_high is not None and current_high > listing_day_high)
+            would_have_triggered = bool(current_high > 0 and current_high > listing_day_high)
             payload = {
                 "symbol": symbol,
                 "action": "REJECTED_BREAKOUT",
@@ -946,9 +955,10 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None):
         today_date = datetime.today().date()
         days_old = (today_date - latest_date).days
         
-        # CRITICAL: Get LIVE price FIRST for accurate breakout detection
+        # CRITICAL: Get LIVE price FIRST for accurate breakout detection.
+        # Note: current_high is already initialized to 0.0 above (closure safe-init).
+        # Overwrite it here with the live value.
         current_price = None
-        current_high = None
         price_source = "Historical Close"
         price_is_live = False
         
@@ -1296,9 +1306,14 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None):
                 return None
 
             # Leader score gate (selection quality)
+            # P1-1 Fix: _leader_score() expects a float volume ratio for its scoring thresholds
+            # (>= 2.0 → +2 pts, >= 1.5 → +1 pt). The previous code passed `volume_spike`
+            # which is a boolean (True/False). bool(True) == 1, which is always < 2.0,
+            # so volume was always scored 0 regardless of the actual spike size.
+            # Use vol_vs_avg (float) which is already computed above.
             leader_score = _leader_score(
                 entry_above_high_pct=entry_above_high_pct,
-                volume_spike=(current_volume / avg_volume) if avg_volume > 0 else 0,
+                volume_spike=vol_vs_avg,  # float ratio — was incorrectly boolean
                 risk_reward=risk_reward,
                 current_price=current_price,
                 listing_high=listing_day_high,
@@ -1735,170 +1750,6 @@ Keep {symbol} on your radar. A close above ₹{listing_high:.2f} with volume tri
 """
     return msg
 
-def save_breakout_signal(breakout_data):
-    """Save breakout signal to MongoDB (DB-only)."""
-    try:
-        now = datetime.now()
-        today = now.date()
-        signal_id = f"LISTING_{breakout_data['symbol']}_{today.strftime('%Y%m%d')}"
-        try:
-            from db import signal_exists, has_active_position
-            if signal_exists(signal_id):
-                logger.info(f"Listing day breakout signal already exists for {breakout_data['symbol']} today")
-                return False
-            if has_active_position(breakout_data['symbol']):
-                logger.info(f"⏭️ Skipping {breakout_data['symbol']} - already has active position")
-                return False
-        except Exception:
-            pass
-        
-        # Create new signal
-        # Add note about volume caution if applicable
-        volume_note = ""
-        if breakout_data.get('has_volume_caution', False):
-            volume_warnings = breakout_data.get('volume_warnings', [])
-            volume_note = f"VOLUME_CAUTION: {'; '.join(volume_warnings)}"
-        
-        # Resolve market regime FIRST — used in both the capital gate and the signal doc.
-        _mr = get_market_regime(today)
-        size_mult = scanner_module.REGIME_SIZE_MULT.get(_mr, 0.5)
-
-        # --- Capital Allocation Gate: Max Active Positions Limit (Soft Cap 5 / Hard Cap 7) ---
-        try:
-            from db import positions_col
-            active_count = positions_col.count_documents({"status": "ACTIVE"})
-            if active_count < scanner_module.MAX_ACTIVE_POSITIONS:
-                portfolio_full = False
-            elif active_count >= scanner_module.HARD_ACTIVE_POSITIONS:
-                portfolio_full = True
-            else:
-                # Soft cap breached but hard cap not breached: check if pristine listing setup
-                is_pristine = (int(breakout_data.get("leader_score", 0)) >= 8) or (breakout_data.get("tier", "") == "Tier 1") or (_mr == "CORRECTION")
-                if is_pristine:
-                    portfolio_full = False
-                    logger.info(f"🔓 Soft Cap Bypass: Pristine listing setup for {breakout_data['symbol']} (Leader Score: {breakout_data.get('leader_score')}, Tier: {breakout_data.get('tier')}, Regime: {_mr}). Allowed trade up to Hard Cap ({active_count}/{scanner_module.HARD_ACTIVE_POSITIONS})")
-                else:
-                    portfolio_full = True
-                    logger.info(f"🔒 Soft Cap Enforced: Standard listing setup for {breakout_data['symbol']} (Leader Score: {breakout_data.get('leader_score')}, Tier: {breakout_data.get('tier')}, Regime: {_mr}) blocked at Soft Cap ({active_count}/{scanner_module.MAX_ACTIVE_POSITIONS})")
-        except Exception as cap_e:
-            logger.error(f"Error evaluating listing day capital allocation cap: {cap_e}")
-            portfolio_full = False
-
-        new_signal = {
-            "signal_id": signal_id,
-            "symbol": breakout_data['symbol'],
-            "signal_date": now, # Use full datetime for MongoDB compatibility
-            "signal_time": now.strftime("%H:%M:%S"),
-            "entry_price": breakout_data['entry_price'],
-            "grade": "LISTING_BREAKOUT" + ("_LOW_VOL" if breakout_data.get('has_volume_caution', False) else ""),
-            "score": 100 if not breakout_data.get('has_volume_caution', False) else 80,
-            "stop_loss": breakout_data['stop_loss'],
-            "target_price": breakout_data['target_price'],
-            "status": "ACTIVE" if not portfolio_full else "PAPER_ONLY",
-            "next_day_open": None,
-            "exit_date": "",
-            "exit_price": 0,
-            "pnl_pct": 0,
-            "days_held": 0,
-            "signal_type": "LISTING_DAY_BREAKOUT",
-            "notes": volume_note,
-            "version": SCANNER_VERSION,
-            "scanner": "listing_day",
-            "position_size_weight": size_mult,
-            "market_regime": _mr,
-            "strategy_version": SCANNER_VERSION,
-            "exit_version": SCANNER_VERSION,
-            "execution_version": "3.3.0-single-writer",
-            "risk_model_version": "3.3.0-archetype-velocity",
-            "leader_score": int(breakout_data.get("leader_score", 0)),
-            # --- Tier fields (additive, backward-compatible) ---
-            "tier": breakout_data.get("tier", ""),
-            "position_size_pct": breakout_data.get("position_size_pct", ""),
-            "tier_rationale": breakout_data.get("tier_rationale", ""),
-            # --- Setup Quality & Behavioral Metrics ---
-            "ipo_age": breakout_data.get("ipo_age", None),
-            "distance_from_listing_high_pct": breakout_data.get("distance_from_listing_high_pct", None),
-            "consolidation_range_pct": breakout_data.get("consolidation_range_pct", None),
-            "volume_ratio": breakout_data.get("volume_ratio", None),
-            "volume_vs_listing_day": breakout_data.get("volume_vs_listing_day", None),
-            "risk_reward_ratio": breakout_data.get("risk_reward", None),
-            "confirmation_time_min": breakout_data.get("confirmation_time_min", None),
-            "max_extension_during_confirmation_pct": breakout_data.get("max_extension_during_confirmation_pct", None),
-            "rejection_depth_pct": breakout_data.get("rejection_depth_pct", None),
-            "post_confirm_move_pct": breakout_data.get("post_confirm_move_pct", None),
-            "did_hold_breakout_level": breakout_data.get("did_hold_breakout_level", True),
-            "entry_vs_breakout_pct": breakout_data.get("entry_vs_breakout_pct", None),
-            "signal_strength_score": breakout_data.get("signal_strength_score", None),
-            "raw_stop_pct": breakout_data.get("raw_stop_pct", None),
-            "capped_stop_pct": breakout_data.get("capped_stop_pct", None),
-            "stop_type": breakout_data.get("stop_type", None),
-            "risk_cap_applied": breakout_data.get("risk_cap_applied", False),
-            # --- Score Components ---
-            "tier_weight": breakout_data.get("score_components", {}).get("tier_weight", None),
-            "volume_score": breakout_data.get("score_components", {}).get("volume_score", None),
-            "base_score": breakout_data.get("score_components", {}).get("base_score", None),
-            "momentum_score": breakout_data.get("score_components", {}).get("momentum_score", None),
-        }
-        
-        # Write to daily log — pass breakout candle time for market-correct deduplication
-        write_daily_log("listing_day", breakout_data['symbol'], "BREAKOUT_SIGNAL", {
-            "entry": breakout_data['entry_price'],
-            "stop_loss": breakout_data['stop_loss'],
-            "target": breakout_data['target_price'],
-            "listing_high": breakout_data.get('listing_day_high', 0),
-            "volume_caution": breakout_data.get('has_volume_caution', False),
-            "tier": breakout_data.get('tier', ''),
-            "position_size_pct": breakout_data.get('position_size_pct', ''),
-            "tier_rationale": breakout_data.get('tier_rationale', ''),
-            "perfect_base": breakout_data.get('perfect_base', False),
-            "post_confirm_move_pct": breakout_data.get('post_confirm_move_pct', 0),
-            "entry_vs_breakout_pct": breakout_data.get("entry_vs_breakout_pct", None),
-            "held_above_breakout_after_confirm": breakout_data.get("did_hold_breakout_level", True),
-            "signal_strength_score": breakout_data.get("signal_strength_score", None),
-            "tier_weight": breakout_data.get("score_components", {}).get("tier_weight", None),
-            "volume_score": breakout_data.get("score_components", {}).get("volume_score", None),
-            "base_score": breakout_data.get("score_components", {}).get("base_score", None),
-            "momentum_score": breakout_data.get("score_components", {}).get("momentum_score", None),
-        }, candle_timestamp=breakout_data.get('candle_timestamp') or breakout_data.get('timestamp'))
-        
-        # --- NEW: V2 Institutional Telemetry Integration ---
-        try:
-            IntegrationBridge = getattr(scanner_module, 'IntegrationBridge', None)
-            if IntegrationBridge:
-                bridge = IntegrationBridge()
-                # Transform data for SignalBuilder
-                enriched_payload = breakout_data.copy()
-                enriched_payload['scanner'] = 'listing_day'
-                enriched_payload['entry_price'] = breakout_data.get('entry_price')
-                enriched_payload['stop_loss'] = breakout_data.get('stop_loss')
-                enriched_payload['target_price'] = breakout_data.get('target_price')
-                enriched_payload['candle_timestamp'] = breakout_data.get('candle_timestamp') or datetime.now()
-                
-                success_v2 = bridge.save_signal(enriched_payload)
-                if success_v2:
-                    logger.info(f"🏛️  V2 Institutional Snapshot saved for {breakout_data['symbol']}")
-        except Exception as v2_e:
-            logger.warning(f"[Telemetry] V2 bridge failed (falling back to V1 only): {v2_e}")
-
-        # DB-only write: signal (V1 Legacy Collection)
-        try:
-            from db import upsert_signal
-            upsert_signal(new_signal.copy())
-        except Exception as db_e:
-            logger.error(f"[MongoDB] signal write FAILED for {signal_id}: {db_e}")
-            try:
-                from db import db_metrics
-                db_metrics["failures"] = db_metrics.get("failures", 0) + 1
-            except Exception:
-                pass
-        
-        logger.info(f"✅ Saved legacy signal for {breakout_data['symbol']}")
-        return True
-    
-    except Exception as e:
-        logger.error(f"Error saving signal: {e}")
-        return False
-
 def save_watchlist_signal(breakout_data):
     """Save watchlist signal to prevent duplicate alerts"""
     try:
@@ -1949,109 +1800,6 @@ def save_watchlist_signal(breakout_data):
         
     except Exception as e:
         logger.error(f"Error saving watchlist signal: {e}")
-        return False
-
-def add_position(breakout_data):
-    """Add position to MongoDB (DB-only)."""
-    try:
-        today = datetime.now().date()
-
-        # Resolve market regime FIRST — used in both the capital gate and the position doc.
-        _mr = get_market_regime(today)
-        size_mult = scanner_module.REGIME_SIZE_MULT.get(_mr, 0.5)
-
-        # --- Capital Allocation Gate: Max Active Positions Limit (Soft Cap 5 / Hard Cap 7) ---
-        try:
-            from db import positions_col
-            active_count = positions_col.count_documents({"status": "ACTIVE"})
-            if active_count < scanner_module.MAX_ACTIVE_POSITIONS:
-                portfolio_full = False
-            elif active_count >= scanner_module.HARD_ACTIVE_POSITIONS:
-                portfolio_full = True
-            else:
-                # Soft cap breached but hard cap not breached: check if pristine listing setup
-                is_pristine = (int(breakout_data.get("leader_score", 0)) >= 8) or (breakout_data.get("tier", "") == "Tier 1") or (_mr == "CORRECTION")
-                if is_pristine:
-                    portfolio_full = False
-                    logger.info(f"🔓 Soft Cap Bypass (add_position): Pristine listing setup for {breakout_data['symbol']} (Leader Score: {breakout_data.get('leader_score')}, Tier: {breakout_data.get('tier')}, Regime: {_mr}). Allowed up to Hard Cap ({active_count}/{scanner_module.HARD_ACTIVE_POSITIONS})")
-                else:
-                    portfolio_full = True
-        except Exception:
-            portfolio_full = False
-
-        try:
-            from db import has_active_position
-            if has_active_position(breakout_data['symbol']):
-                logger.info(f"⏭️ Position already exists for {breakout_data['symbol']}")
-                return False
-        except Exception:
-            pass
-        
-        signal_id = f"LISTING_{breakout_data['symbol']}_{today.strftime('%Y%m%d')}"
-        
-        # Create new position
-        new_position = {
-            "signal_id": signal_id,
-            "symbol": breakout_data['symbol'],
-            "entry_date": today,
-            "entry_price": breakout_data['entry_price'],
-            "grade": "LISTING_BREAKOUT",
-            "current_price": breakout_data['entry_price'],
-            "stop_loss": breakout_data['stop_loss'],
-            "trailing_stop": breakout_data['stop_loss'],
-            "pnl_pct": 0,
-            "days_held": 0,
-            "status": "ACTIVE" if not portfolio_full else "PAPER_ONLY",
-            "next_day_open": None,
-            "position_size_weight": size_mult,
-            "market_regime": _mr,
-            "version": SCANNER_VERSION,
-            "strategy_version": SCANNER_VERSION,
-            "exit_version": SCANNER_VERSION,
-            "execution_version": "3.3.0-single-writer",
-            "risk_model_version": "3.3.0-archetype-velocity",
-            "raw_stop_pct": breakout_data.get("raw_stop_pct", None),
-            "capped_stop_pct": breakout_data.get("capped_stop_pct", None),
-            "stop_type": breakout_data.get("stop_type", None),
-            "risk_cap_applied": breakout_data.get("risk_cap_applied", False),
-            # Shadow SL tracking fields
-            "shadow_sl_8pct": round(breakout_data['entry_price'] * 0.92, 2),
-            "shadow_sl_10pct": round(breakout_data['entry_price'] * 0.90, 2),
-            "shadow_sl_12pct": round(breakout_data['entry_price'] * 0.88, 2),
-            "shadow_status_8pct": "ACTIVE",
-            "shadow_status_10pct": "ACTIVE",
-            "shadow_status_12pct": "ACTIVE",
-            "shadow_exit_price_8pct": None,
-            "shadow_exit_price_10pct": None,
-            "shadow_exit_price_12pct": None,
-            "shadow_exit_date_8pct": None,
-            "shadow_exit_date_10pct": None,
-            "shadow_exit_date_12pct": None,
-            "shadow_exit_reason_8pct": None,
-            "shadow_exit_reason_10pct": None,
-            "shadow_exit_reason_12pct": None
-        }
-        
-        # DB-only write: position
-        try:
-            from db import upsert_position
-            upsert_position(new_position.copy())
-            if not portfolio_full:
-                logger.info(f"✅ Added position for {breakout_data['symbol']}")
-            else:
-                logger.warning(f"⏭️ Portfolio FULL ({active_count} active). Added position as PAPER_ONLY for {breakout_data['symbol']}. (Soft Cap: {scanner_module.MAX_ACTIVE_POSITIONS}, Hard Cap: {scanner_module.HARD_ACTIVE_POSITIONS})")
-        except Exception as db_e:
-            logger.error(f"[MongoDB] position write FAILED for {breakout_data['symbol']}: {db_e}")
-            try:
-                from db import db_metrics
-                db_metrics["failures"] = db_metrics.get("failures", 0) + 1
-            except Exception:
-                pass
-        
-        return True
-    
-    except Exception as e:
-        logger.error(f"Error adding position: {e}")
         return False
 
 def update_listing_status(symbol, status):
@@ -2162,29 +1910,11 @@ def scan_listing_day_breakouts():
                     logger.info(f"   Target: ₹{breakout['target_price']:.2f}")
                     logger.info(f"   Tier rationale: {breakout.get('tier_rationale', '')}")
 
-                    # Save signal
-                    if save_breakout_signal(breakout):
-                        # Add position
-                        add_position(breakout)
-
+                    # Save signal and position atomically
+                    success, portfolio_full, active_count, _mr, size_mult = commit_trade_to_db(breakout)
+                    if success:
                         # Update listing status
                         update_listing_status(symbol, 'BREAKOUT')
-
-                        _mr = get_market_regime(datetime.today().date())
-                        try:
-                            from db import positions_col
-                            active_count = positions_col.count_documents({"status": "ACTIVE"})
-                            if active_count < scanner_module.MAX_ACTIVE_POSITIONS:
-                                portfolio_full = False
-                            elif active_count >= scanner_module.HARD_ACTIVE_POSITIONS:
-                                portfolio_full = True
-                            else:
-                                is_pristine = (int(breakout.get("leader_score", 0)) >= 8) or (breakout.get("tier", "") == "Tier 1") or (_mr == "CORRECTION")
-                                portfolio_full = not is_pristine
-                        except Exception:
-                            portfolio_full = False
-                            
-                        size_mult = scanner_module.REGIME_SIZE_MULT.get(_mr, 0.5)
 
                         # Send alert
                         alert_msg = format_listing_breakout_alert(breakout)
@@ -2199,25 +1929,10 @@ def scan_listing_day_breakouts():
                     logger.info(f"📦 TIER B BASE BREAKOUT for {symbol}! [{breakout.get('position_size_pct', 40)}% size]")
                     logger.info(f"   Entry: ₹{breakout['entry_price']:.2f}  Target (listing high): ₹{breakout['target_price']:.2f}")
 
-                    if save_breakout_signal(breakout):
-                        add_position(breakout)
+                    # Save signal and position atomically
+                    success, portfolio_full, active_count, _mr, size_mult = commit_trade_to_db(breakout)
+                    if success:
                         update_listing_status(symbol, 'BASE_BREAKOUT')
-                        
-                        _mr = get_market_regime(datetime.today().date())
-                        try:
-                            from db import positions_col
-                            active_count = positions_col.count_documents({"status": "ACTIVE"})
-                            if active_count < scanner_module.MAX_ACTIVE_POSITIONS:
-                                portfolio_full = False
-                            elif active_count >= scanner_module.HARD_ACTIVE_POSITIONS:
-                                portfolio_full = True
-                            else:
-                                is_pristine = (int(breakout.get("leader_score", 0)) >= 8) or (breakout.get("tier", "") == "Tier 1") or (_mr == "CORRECTION")
-                                portfolio_full = not is_pristine
-                        except Exception:
-                            portfolio_full = False
-                            
-                        size_mult = scanner_module.REGIME_SIZE_MULT.get(_mr, 0.5)
 
                         alert_msg = format_base_breakout_alert(breakout)
                         if portfolio_full:

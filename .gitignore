@@ -246,3 +246,6 @@ validation_charts/
 
 # Weekly audit report txt files (stored in MongoDB instead)
 audit_reports/
+
+# Generated state file
+listing_pending_breakouts.json

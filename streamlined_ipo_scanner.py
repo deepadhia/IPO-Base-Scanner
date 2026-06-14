@@ -3203,6 +3203,30 @@ def detect_scan(symbols, listing_map):
                 
                 # Enrich metrics with liquidity telemetry for logging
                 metrics.update(liquidity_metrics)
+
+                # P0-1 Fix: Add bucket validation to detect_scan, matching detect_live_patterns.
+                # Without this, EXTENDED/BROKEN stocks (prng 25-45, low volume) could pass
+                # detect_scan while they would be rejected by detect_live_patterns. This
+                # created a signal quality divergence between the two scan paths.
+                ipo_age_for_bucket = None
+                try:
+                    _ld_val = ld if not isinstance(ld, dict) else (ld.get("listingDate") or ld.get("listing_date"))
+                    if _ld_val is not None:
+                        ipo_age_for_bucket = (datetime.today().date() - pd.to_datetime(_ld_val).date()).days
+                except Exception:
+                    pass
+
+                bucket, bucket_reasons = categorize_signal_bucket(metrics, ipo_age_for_bucket or 0)
+                if bucket != BUCKET_ALIGNED:
+                    _log_scan_reject_once({
+                        "reason": f"bucket_{bucket.lower()}",
+                        "bucket": bucket,
+                        "bucket_reasons": bucket_reasons,
+                        "mode": "scan",
+                        **metrics
+                    })
+                    logger.debug(f"[detect_scan] {sym}: bucket={bucket} reasons={bucket_reasons} — skipping")
+                    continue
                 # ------------------------------------------------------------------
                 
                 # Entry date should be the next trading day after breakout
@@ -3759,13 +3783,16 @@ def stop_loss_update_scan():
             # Use listing date as fallback if entry_date is invalid
             try:
                 ipo_df = cache_recent_ipos()
-                if not listing_map:
-                    listing_map = {}
-                listing_map = {
+                # P0-2 Fix: Build a LOCAL listing map inside the function instead of
+                # referencing the outer-scope `listing_map` from __main__. The outer
+                # variable is never available when stop_loss_update_scan() is called
+                # from the scheduler (not from __main__), causing a silent NameError
+                # that degrades the listing-date fallback path for every position.
+                local_listing_map = {
                     row["symbol"]: pd.to_datetime(row["listing_date"]).date()
                     for _, row in ipo_df.iterrows()
                 }
-                listing_date = listing_map.get(sym)
+                listing_date = local_listing_map.get(sym)
             except:
                 listing_date = None
             
