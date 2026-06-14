@@ -71,6 +71,23 @@ def get_db():
     return MongoClient(uri, tz_aware=True)["ipo_scanner_v2"]
 
 
+def send_telegram_notification(msg):
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not bot_token or not chat_id:
+        return
+    import requests
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    try:
+        requests.post(url, json={
+            "chat_id": chat_id,
+            "text": msg,
+            "parse_mode": "HTML"
+        }, timeout=10)
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Result container
 # ---------------------------------------------------------------------------
@@ -218,6 +235,55 @@ def audit_database_integrity(db):
             ed = ed[:10]
         if ed in NSE_HOLIDAYS_2025_2026:
             r.warn("Position %s: entry_date=%s is an NSE holiday. Verify." % (sym, ed))
+
+    # 1i. IPO symbols in 'ipos' collection missing from 'listing_data' collection
+    try:
+        all_ipos = list(db.ipos.find({}, {"symbol": 1, "_id": 0}))
+        ipo_symbols = {d["symbol"] for d in all_ipos if d.get("symbol")}
+        
+        all_listings = list(db.listing_data.find({}, {"symbol": 1, "_id": 0}))
+        listing_symbols = {d["symbol"] for d in all_listings if d.get("symbol")}
+        
+        missing_listings = ipo_symbols - listing_symbols
+        # Filter out rights entitlements and SME segments that we ignore in the scanner
+        missing_listings = {sym for sym in missing_listings if not ('-RE' in sym or sym.endswith('-SM') or 'RE1' in sym)}
+        
+        if missing_listings:
+            r.warn("IPO symbols missing from 'listing_data' collection: %s. Attempting auto-backfill..." % sorted(missing_listings))
+            try:
+                from listing_day_breakout_scanner import update_listing_data_for_new_ipos
+                update_listing_data_for_new_ipos()
+                
+                # Re-verify after backfill
+                all_listings_post = list(db.listing_data.find({}, {"symbol": 1, "_id": 0}))
+                listing_symbols_post = {d["symbol"] for d in all_listings_post if d.get("symbol")}
+                missing_listings_post = ipo_symbols - listing_symbols_post
+                missing_listings_post = {sym for sym in missing_listings_post if not ('-RE' in sym or sym.endswith('-SM') or 'RE1' in sym)}
+                
+                if missing_listings_post:
+                    r.warn("IPO symbols still missing from 'listing_data' collection after backfill (rate-limited or Upstox fail): %s" % sorted(missing_listings_post))
+                    err_msg = (
+                        f"⚠️ <b>IPO Listing Data Sync Warning</b>\n\n"
+                        f"The following IPO symbols are in <code>ipos</code> but missing from <code>listing_data</code>. "
+                        f"They could not be auto-backfilled in GHA (likely due to yfinance cloud IP blocking):\n"
+                        f"👉 <code>{sorted(list(missing_listings_post))}</code>\n\n"
+                        f"💡 Please run <code>python manual_update_listing_data.py</code> locally to synchronize."
+                    )
+                    send_telegram_notification(err_msg)
+                else:
+                    r.ok("All active IPO symbols successfully backfilled and verified in 'listing_data' collection.")
+            except Exception as backfill_err:
+                r.warn("Failed during auto-backfill execution: %s" % backfill_err)
+                err_msg = (
+                    f"⚠️ <b>IPO Listing Data Sync Error</b>\n\n"
+                    f"An error occurred during auto-backfill of missing listing records:\n"
+                    f"<code>{backfill_err}</code>"
+                )
+                send_telegram_notification(err_msg)
+        else:
+            r.ok("All active IPO symbols have corresponding records in the 'listing_data' collection.")
+    except Exception as e:
+        r.error("Failed to audit missing listing data symbols: %s" % e)
 
     r.ok("Scanned %d signals and %d positions." % (len(signals), len(positions)))
     return r

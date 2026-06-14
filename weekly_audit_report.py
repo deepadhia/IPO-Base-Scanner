@@ -188,6 +188,57 @@ def audit_db_integrity(positions_col, signals_col):
     else:
         _ok(SEC, "All ACTIVE signals have a matching position record")
 
+    # Check for IPO symbols missing from listing_data
+    try:
+        from db import ipos_col, listing_data_col
+        if ipos_col is not None and listing_data_col is not None:
+            all_ipos = list(ipos_col.find({}, {"symbol": 1, "_id": 0}))
+            ipo_symbols = {d["symbol"] for d in all_ipos if d.get("symbol")}
+            
+            all_listings = list(listing_data_col.find({}, {"symbol": 1, "_id": 0}))
+            listing_symbols = {d["symbol"] for d in all_listings if d.get("symbol")}
+            
+            missing_listings = ipo_symbols - listing_symbols
+            missing_listings = {sym for sym in missing_listings if not ('-RE' in sym or sym.endswith('-SM') or 'RE1' in sym)}
+            
+            if missing_listings:
+                _warn(SEC, f"{len(missing_listings)} IPO symbol(s) missing from listing_data collection. Attempting auto-backfill...",
+                      {"symbols": sorted(list(missing_listings))})
+                try:
+                    from listing_day_breakout_scanner import update_listing_data_for_new_ipos
+                    update_listing_data_for_new_ipos()
+                    
+                    # Re-verify after backfill
+                    all_listings_post = list(listing_data_col.find({}, {"symbol": 1, "_id": 0}))
+                    listing_symbols_post = {d["symbol"] for d in all_listings_post if d.get("symbol")}
+                    missing_listings_post = ipo_symbols - listing_symbols_post
+                    missing_listings_post = {sym for sym in missing_listings_post if not ('-RE' in sym or sym.endswith('-SM') or 'RE1' in sym)}
+                    
+                    if missing_listings_post:
+                        _warn(SEC, f"{len(missing_listings_post)} IPO symbol(s) still missing from listing_data after backfill: {sorted(list(missing_listings_post))}")
+                        err_msg = (
+                            f"⚠️ <b>Weekly Audit Listing Data Sync Warning</b>\n\n"
+                            f"The following IPO symbols are in <code>ipos</code> but missing from <code>listing_data</code>. "
+                            f"They could not be auto-backfilled in GHA (likely due to yfinance cloud IP blocking):\n"
+                            f"👉 <code>{sorted(list(missing_listings_post))}</code>\n\n"
+                            f"💡 Please run <code>python manual_update_listing_data.py</code> locally to synchronize."
+                        )
+                        send_telegram_alert(err_msg)
+                    else:
+                        _ok(SEC, "All active IPO symbols successfully backfilled and verified in listing_data collection")
+                except Exception as backfill_err:
+                    _warn(SEC, f"Failed during auto-backfill execution: {backfill_err}")
+                    err_msg = (
+                        f"⚠️ <b>Weekly Audit Listing Data Sync Error</b>\n\n"
+                        f"An error occurred during auto-backfill of missing listing records:\n"
+                        f"<code>{backfill_err}</code>"
+                    )
+                    send_telegram_alert(err_msg)
+            else:
+                _ok(SEC, "All active IPO symbols have corresponding records in the listing_data collection")
+    except Exception as e:
+        _err(SEC, f"Failed to audit missing listing data symbols: {e}")
+
     return {
         "active_positions": len(active_pos_symbols),
         "active_signals":   len(active_sig_symbols),
