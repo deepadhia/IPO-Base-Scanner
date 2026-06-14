@@ -3322,9 +3322,9 @@ def detect_scan(symbols, listing_map):
                     "winner_criteria": winner_info["winner_criteria"],
                     "winner_flags": winner_info["winner_flags"],
                     "position_size_weight": size_mult,
-                    "market_regime": _mr,
                     "version": SCANNER_VERSION, "scanner": "consolidation_scan",
-                    "strategy_version": "3.3.0-consolidation",
+                    "strategy_version": SCANNER_VERSION,
+                    "exit_version": SCANNER_VERSION,
                     "execution_version": "3.3.0-single-writer",
                     "risk_model_version": "3.3.0-archetype-velocity"
                 }
@@ -3339,7 +3339,8 @@ def detect_scan(symbols, listing_map):
                     "position_size_weight": size_mult,
                     "market_regime": _mr,
                     "version": SCANNER_VERSION,
-                    "strategy_version": "3.3.0-consolidation",
+                    "strategy_version": SCANNER_VERSION,
+                    "exit_version": SCANNER_VERSION,
                     "execution_version": "3.3.0-single-writer",
                     "risk_model_version": "3.3.0-archetype-velocity",
                     # Shadow SL tracking fields
@@ -3945,11 +3946,9 @@ def stop_loss_update_scan():
                         "time_to_failure_days": time_to_failure_days,
                         "time_to_failure_min": time_to_failure_min,
                         "runup_before_drawdown_pct": round(new_max_runup, 2) if new_max_drawdown < 0 else None,
-                        # v3.3.0: position_version tracks the scanner version that OPENED this trade,
-                        # allowing analytics to distinguish legacy 2.5.0 positions from 3.3.0 positions
-                        # even though all new log entries carry SCANNER_VERSION = 3.3.0.
                         "position_version": pos.get("version", "unknown"),
                         "position_strategy_version": pos.get("strategy_version", "unknown"),
+                        "position_exit_version": SCANNER_VERSION,
                     })
                     
                     # Send exit alert
@@ -3969,6 +3968,7 @@ def stop_loss_update_scan():
                             clean_pos[k] = v
                         clean_pos["exit_reason"] = exit_reason
                         clean_pos["outcome_type"] = outcome_type
+                        clean_pos["exit_version"] = SCANNER_VERSION
                         upsert_position(clean_pos)
                     except Exception as db_e:
                         logger.error(f"Failed to persist position exit for {sym}: {db_e}")
@@ -4007,10 +4007,9 @@ def stop_loss_update_scan():
                         "market_regime": current_regime,
                         "winner_label": pos.get("winner_label", "MISSING"),
                         "exit_reason": None,
-                        # v3.3.0: position_version tracks which scanner version opened this trade
-                        # so daily snapshots remain queryable per-cohort even after version bumps.
                         "position_version": pos.get("version", "unknown"),
                         "position_strategy_version": pos.get("strategy_version", "unknown"),
+                        "position_exit_version": SCANNER_VERSION,
                     })
 
                     # Count only real trailing-stop improvements as "updates"
@@ -4027,6 +4026,7 @@ def stop_loss_update_scan():
                             "grade": pos.get("grade", "?"),
                             "position_version": pos.get("version", "unknown"),
                             "position_strategy_version": pos.get("strategy_version", "unknown"),
+                            "position_exit_version": SCANNER_VERSION,
                         })
 
                         # Send position update alert only when stop-loss actually moves
@@ -4045,6 +4045,7 @@ def stop_loss_update_scan():
                             except:
                                 pass # If v is an array, keep it
                             clean_pos[k] = v
+                        clean_pos["exit_version"] = SCANNER_VERSION
                         upsert_position(clean_pos)
                     except Exception as db_e:
                         logger.error(f"Failed to persist position update for {sym}: {db_e}")

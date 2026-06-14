@@ -49,18 +49,23 @@ logger = scanner_module.logger
 from db import get_all_signals_df, get_all_positions_df
 REPORT_FILE = "signals_performance_report.json"
 
-def analyze_signals():
+def analyze_signals(version=None):
     """Analyze all signals for performance"""
     print("📊 Analyzing Signals Performance...")
     print("=" * 80)
-    
-
     
     # Load signals from MongoDB
     signals_df = get_all_signals_df()
     if signals_df.empty:
         print("❌ No signals found!")
         return None
+        
+    if version:
+        if 'strategy_version' in signals_df.columns:
+            # Handle float/string comparison safely
+            signals_df = signals_df[signals_df['strategy_version'].astype(str) == str(version)]
+        elif 'version' in signals_df.columns:
+            signals_df = signals_df[signals_df['version'].astype(str) == str(version)]
     
     print(f"\n📈 Found {len(signals_df)} signals to analyze\n")
     
@@ -195,19 +200,24 @@ def analyze_signals():
     
     return results
 
-def analyze_positions():
+def analyze_positions(version=None):
     """Analyze all positions for performance"""
     print("\n\n" + "=" * 80)
     print("📊 Analyzing Positions Performance...")
     print("=" * 80)
-    
-
     
     # Load positions from MongoDB
     positions_df = get_all_positions_df()
     if positions_df.empty:
         print("❌ No positions found!")
         return None
+        
+    if version:
+        if 'strategy_version' in positions_df.columns:
+            # Handle float/string comparison safely
+            positions_df = positions_df[positions_df['strategy_version'].astype(str) == str(version)]
+        elif 'version' in positions_df.columns:
+            positions_df = positions_df[positions_df['version'].astype(str) == str(version)]
     
     print(f"\n💰 Found {len(positions_df)} positions to analyze\n")
     
@@ -364,13 +374,20 @@ def generate_report(signals_results, positions_results):
     print("=" * 80)
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Verify signals and positions performance")
+    parser.add_argument("--version", "-v", type=str, help="Filter strategy version (e.g. 3.3.0)")
+    args = parser.parse_args()
+    
     print("🔍 SIGNALS PERFORMANCE VERIFICATION")
     print("=" * 80)
     print("This script analyzes all signals and positions to verify performance.")
     print("Run this after 1 month to check signal accuracy and identify issues.\n")
-    
-    signals_results = analyze_signals()
-    positions_results = analyze_positions()
+    if args.version:
+        print(f"Filtering by strategy version: {args.version}")
+        
+    signals_results = analyze_signals(version=args.version)
+    positions_results = analyze_positions(version=args.version)
     
     if signals_results or positions_results:
         generate_report(signals_results, positions_results)

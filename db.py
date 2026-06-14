@@ -550,6 +550,7 @@ def close_signal_in_db(symbol: str, exit_price: float, pnl_pct: float, days_held
                 "pnl_pct": float(pnl_pct),
                 "days_held": int(days_held),
                 "exit_reason": exit_reason,
+                "exit_version": SCANNER_VERSION,
                 "updated_at": datetime.now(timezone.utc),
             }},
         )
@@ -565,6 +566,7 @@ def close_signal_in_db(symbol: str, exit_price: float, pnl_pct: float, days_held
                     "pnl_pct": float(pnl_pct),
                     "days_held": int(days_held),
                     "exit_reason": exit_reason,
+                    "exit_version": SCANNER_VERSION,
                     "updated_at": datetime.now(timezone.utc),
                 }}
             )
