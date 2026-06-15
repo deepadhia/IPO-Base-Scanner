@@ -232,6 +232,10 @@ IPO-Base-Scanner/
 ├── master_audit.py                  # System integrity audit (Section 1/2/3)
 ├── manage_db.py                     # Unified management entrypoint
 │
+├── cloudflare-dispatcher/           # Reliable cron dispatcher (Cloudflare Workers)
+│   ├── src/index.js                 # Dispatch schedule + GitHub API calls
+│   └── wrangler.toml               # Cron trigger: */15 3-10 * * 1-5 (UTC)
+│
 └── logs/                            # Derived output summary files (optional)
 ```
 
@@ -420,7 +424,7 @@ python streamlined_ipo_scanner.py weekly_summary
 python streamlined_ipo_scanner.py monthly_review
 ```
 
-### 5. Automation Deployment (GitHub Actions)
+### 5. Automation Deployment (GitHub Actions + Cloudflare Worker)
 Add to GitHub Repository Secrets: 
 - `UPSTOX_ACCESS_TOKEN`
 - `TELEGRAM_BOT_TOKEN`
@@ -430,21 +434,46 @@ Add to GitHub Repository Secrets:
 **Infrastructure Health:**
 Every workflow run now includes a **"Check MongoDB Connection"** step. If this fails, check your Atlas IP Whitelist (allow `0.0.0.0/0` for GitHub runners).
 
-Primary workflows:
-- `ipo-scanner-v2.yml` — consolidation scanner (`scan`, `stop_loss_update`, weekly/monthly summaries)
-- `listing-day-breakout.yml` — listing-day breakout scanner
-- `watchlist-hourly-scanner.yml` — hourly watchlist breakout scanner
-- `master-audit-and-verification.yml` — daily system integrity audit and verification suite
-- `biweekly-db-quality-analysis.yml` — biweekly DB quality & winner pattern analysis report
+#### Scheduling Architecture
 
-Automated schedules (IST):
-| Job | Time | Cron (UTC) |
+GitHub's built-in `on: schedule:` is known to delay runs by **30 minutes to 3+ hours** under load — unsuitable for intraday market scanning. The system uses a **two-layer scheduling architecture** to guarantee precision:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Cloudflare Worker (cloudflare-dispatcher/)                 │
+│  Cron: */15 3-10 * * 1-5  (every 15 min, market hours UTC) │
+│  → Calls GitHub workflow_dispatch API at exact :15/:45 UTC  │
+│  → Workflows start within seconds of scheduled time         │
+└──────────────────────────┬──────────────────────────────────┘
+                           │  workflow_dispatch
+        ┌──────────────────┼──────────────────────┐
+        ▼                  ▼                       ▼
+listing-day-        watchlist-hourly-        ipo-scanner-v2
+breakout.yml        scanner.yml              .yml (daily scan)
+```
+
+Low-frequency, time-tolerant jobs (weekly summary, monthly review) continue to use GitHub's own scheduler — a 2–3 hour delay is acceptable for these.
+
+#### Workflow Trigger Reference
+
+| Workflow | Trigger | Schedule |
 |---|---|---|
-| Daily scan + stop-loss update | 2:15 PM weekdays | `45 08 * * 1-5` |
-| Weekly summary | Sunday 2:45 PM | `15 09 * * 0` |
-| Monthly review | 1st of month 2:45 PM | `15 09 1 * *` |
-| Daily system integrity audit & verifications | Daily at 11:00 PM | `30 17 * * *` |
-| Biweekly DB quality & winner pattern analysis | 1st & 15th at 8:00 PM | `30 14 1,15 * *` |
+| `listing-day-breakout.yml` | Cloudflare Worker → `workflow_dispatch` | Every 30 min, 9:15 AM–4:15 PM IST (Mon–Fri) |
+| `watchlist-hourly-scanner.yml` | Cloudflare Worker → `workflow_dispatch` | Every 30 min, 9:15 AM–4:15 PM IST (Mon–Fri) |
+| `ipo-scanner-v2.yml` (daily scan) | Cloudflare Worker → `workflow_dispatch` | 2:15 PM IST weekdays (`08:45 UTC`) |
+| `ipo-scanner-v2.yml` (weekly summary) | GitHub `on:schedule` | Sunday 2:45 PM IST (`15 09 * * 0`) |
+| `ipo-scanner-v2.yml` (monthly review) | GitHub `on:schedule` | 1st of month 2:45 PM IST (`15 09 1 * *`) |
+| `master-audit-and-verification.yml` | GitHub `on:schedule` | Daily 11:00 PM IST (`30 17 * * *`) |
+| `biweekly-db-quality-analysis.yml` | GitHub `on:schedule` | 1st & 15th 8:00 PM IST (`30 14 1,15 * *`) |
+
+#### Cloudflare Worker Dispatcher
+
+The dispatcher runs on Cloudflare's free tier (`cloudflare-dispatcher/`):
+- **Worker URL:** `https://ipo-scanner-workflow-dispatcher.mysmarttv558.workers.dev` (health check)
+- **Free tier usage:** ~32 requests/day vs 100,000/day limit
+- **Secret:** `GITHUB_PAT` (stored encrypted in Cloudflare Worker secrets — never in code)
+- **To update schedule:** edit `cloudflare-dispatcher/src/index.js` → `SCHEDULE` object, then run `npx wrangler deploy`
+- **To update PAT:** run `npx wrangler secret put GITHUB_PAT` from `cloudflare-dispatcher/`
 
 > **NSE Holiday Guard**: The scanner automatically skips NSE public holidays (full 2025–2026 calendar enforced in code). A Telegram notification is sent when a day is skipped.
 
@@ -544,4 +573,4 @@ For experiment cutovers and baseline tracking, see `EXPERIMENT_CHANGELOG.md`.
 
 ---
 
-<sub>Built for systematic IPO momentum trading | v3.3.0 | Automated via GitHub Actions | MongoDB Atlas Infrastructure | Data-Driven Filter Optimization</sub>
+<sub>Built for systematic IPO momentum trading | v3.3.0 | Automated via GitHub Actions + Cloudflare Worker Dispatcher | MongoDB Atlas Infrastructure | Data-Driven Filter Optimization</sub>

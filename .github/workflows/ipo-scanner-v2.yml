@@ -2,9 +2,17 @@ name: IPO Scanner v2 (Consolidation-Based)
 
 on:
   schedule:
-    - cron: '45 08 * * 1-5'   # Daily scan: 2:15 PM IST (8:45 AM UTC) - Weekdays
-    - cron: '15 09 * * 0'     # Weekly summary: Sunday 2:45 PM IST (9:15 AM UTC)
-    - cron: '15 09 1 * *'     # Monthly review: 1st of month 2:45 PM IST (9:15 AM UTC)
+    # ── Scheduling note ────────────────────────────────────────────────────
+    # The DAILY SCAN (2:15 PM IST) is triggered exclusively via
+    # workflow_dispatch by the Cloudflare Worker dispatcher
+    # (cloudflare-dispatcher/src/index.js). Do NOT add it back here
+    # as it will create duplicate runs.
+    #
+    # Only low-frequency, time-tolerant jobs remain below since a
+    # 2-3 hour delay on weekly/monthly summaries is acceptable.
+    # ─────────────────────────────────────────────────────────────────────────────
+    - cron: '15 09 * * 0'     # Weekly summary: Sunday 2:45 PM IST (09:15 UTC)
+    - cron: '15 09 1 * *'     # Monthly review: 1st of month 2:45 PM IST (09:15 UTC)
   workflow_dispatch:
     inputs:
       mode:

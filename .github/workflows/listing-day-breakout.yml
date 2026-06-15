@@ -1,14 +1,16 @@
 name: Listing Day Breakout Scanner
 
 on:
-  schedule:
-    # Run every hour during market hours (9:15 AM to 3:30 PM IST)
-    # IST is UTC+5:30, so:
-    # 9:15 AM IST = 3:45 AM UTC
-    # 3:30 PM IST = 10:00 AM UTC
-    - cron: '45 3-9 * * 1-5'   # Every hour from 3:45 AM to 9:45 AM UTC (9:15 AM to 3:45 PM IST) - Weekdays
-    - cron: '15 4-9 * * 1-5'    # Every hour from 4:15 AM to 9:15 AM UTC (9:45 AM to 2:45 PM IST) - Weekdays
-    - cron: '45 10 * * 1-5'     # 10:45 AM UTC (4:15 PM IST) - Weekdays
+  # ── Scheduling note ────────────────────────────────────────────────────────
+  # This workflow is triggered exclusively via workflow_dispatch by the
+  # Cloudflare Worker dispatcher (cloudflare-dispatcher/src/index.js).
+  # The Worker fires every 15 min during 03:00–10:59 UTC (Mon–Fri) and calls
+  # the GitHub API at exact :15/:45 slots — bypassing GitHub's internal
+  # scheduler, which is known to delay runs by 30 min to 3+ hours.
+  #
+  # DO NOT add on:schedule: back here — it will cause duplicate runs.
+  # To change the schedule, edit cloudflare-dispatcher/src/index.js → SCHEDULE.
+  # ────────────────────────────────────────────────────────────────────────────
   workflow_dispatch:
     inputs:
       check_new_ipos:
