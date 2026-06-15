@@ -174,10 +174,53 @@ export default {
   },
 
   /**
-   * HTTP fetch handler — returns a health-check response if the Worker URL
-   * is called directly (e.g. for testing / uptime monitoring).
+   * HTTP fetch handler — handles manual workflow triggers and health-check queries.
    */
   async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+
+    // Manual workflow trigger endpoint
+    if (url.pathname === "/trigger") {
+      const workflow = url.searchParams.get("workflow");
+      if (!workflow) {
+        return new Response(
+          JSON.stringify({ error: "Missing 'workflow' query parameter" }),
+          { status: 400, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
+      const pat = env.GITHUB_PAT;
+      if (!pat) {
+        return new Response(
+          JSON.stringify({ error: "GITHUB_PAT secret is not configured on Cloudflare" }),
+          { status: 500, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
+      console.log(`[Dispatcher] Manual HTTP trigger received for: ${workflow}`);
+      const result = await dispatchWorkflow(workflow, pat);
+
+      if (result.success) {
+        return new Response(
+          JSON.stringify({
+            message: `Successfully dispatched workflow: ${workflow}`,
+            status: result.status,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      } else {
+        return new Response(
+          JSON.stringify({
+            error: `Failed to dispatch workflow: ${workflow}`,
+            status: result.status,
+            details: result.error,
+          }),
+          { status: result.status || 500, headers: { "Content-Type": "application/json" } }
+        );
+      }
+    }
+
+    // Default: Health check / Status page
     const now = new Date().toISOString();
     return new Response(
       JSON.stringify({
@@ -185,7 +228,10 @@ export default {
         status:   "healthy",
         time_utc: now,
         schedule_slots: Object.keys(SCHEDULE).length,
-        note: "This Worker runs on a cron trigger, not HTTP requests.",
+        endpoints: {
+          health: "/",
+          trigger: "/trigger?workflow=<workflow_filename>"
+        }
       }),
       {
         headers: { "Content-Type": "application/json" },
