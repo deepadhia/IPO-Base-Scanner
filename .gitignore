@@ -249,3 +249,7 @@ audit_reports/
 
 # Generated state file
 listing_pending_breakouts.json
+
+# Cloudflare Worker — node_modules (never commit, regenerated via npm install)
+cloudflare-dispatcher/node_modules/
+cloudflare-dispatcher/.wrangler/

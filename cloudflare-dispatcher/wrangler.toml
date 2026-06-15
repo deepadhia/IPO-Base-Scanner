@@ -1,0 +1,17 @@
+name = "ipo-scanner-workflow-dispatcher"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+# ── Cron trigger ──────────────────────────────────────────────────────────────
+# Fires every 15 minutes from 03:00 to 10:59 UTC, Monday–Friday.
+# The Worker itself checks exact minute (:15 or :45) and dispatches accordingly.
+# :00 and :30 ticks are intentional no-ops — they take <1ms and cost nothing.
+#
+# Free tier: 100,000 requests/day — this uses at most 32/day (4 ticks/hr × 8hrs).
+[triggers]
+crons = ["*/15 3-10 * * 1-5"]
+
+# ── Secrets (DO NOT put real values here — set via CLI or dashboard) ──────────
+# Run:  npx wrangler secret put GITHUB_PAT
+# Then paste your GitHub Personal Access Token (workflow scope) when prompted.
+# The secret is encrypted at rest and never visible in logs or source code.

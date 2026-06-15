@@ -1,0 +1,14 @@
+{
+  "name": "ipo-scanner-workflow-dispatcher",
+  "version": "1.0.0",
+  "description": "Cloudflare Worker that dispatches GitHub Actions workflows on a reliable schedule",
+  "private": true,
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^4.86.0"
+  }
+}
