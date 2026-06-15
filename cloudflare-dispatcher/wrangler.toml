@@ -15,3 +15,7 @@ crons = ["*/15 3-10 * * 1-5"]
 # Run:  npx wrangler secret put GITHUB_PAT
 # Then paste your GitHub Personal Access Token (workflow scope) when prompted.
 # The secret is encrypted at rest and never visible in logs or source code.
+
+[observability.logs]
+enabled = true
+invocation_logs = true
