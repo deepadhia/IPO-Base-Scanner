@@ -12,6 +12,11 @@ def compute_market_context(market_data: pd.DataFrame = None, end_date: datetime 
     If market_data is not provided, it fetches the last 60 days up to end_date.
     """
     try:
+        if market_data is not None and not isinstance(market_data, pd.DataFrame):
+            if isinstance(market_data, (datetime, pd.Timestamp, str)):
+                end_date = market_data
+                market_data = None
+
         if isinstance(end_date, str):
             end_date = pd.to_datetime(end_date).to_pydatetime()
             

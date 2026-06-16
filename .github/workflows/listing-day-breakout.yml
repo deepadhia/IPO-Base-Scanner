@@ -69,7 +69,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
-          IPO_YEARS_BACK: ${{ vars.IPO_YEARS_BACK || '1' }}
+          IPO_YEARS_BACK: ${{ vars.IPO_YEARS_BACK || '3' }}
           LISTING_STRICT_QUALITY: ${{ vars.LISTING_STRICT_QUALITY || 'true' }}
           LISTING_CONFIRMATION_MINUTES: ${{ vars.LISTING_CONFIRMATION_MINUTES || '60' }}
           LISTING_MIN_LEADER_SCORE: ${{ vars.LISTING_MIN_LEADER_SCORE || '5' }}
@@ -78,7 +78,7 @@ jobs:
           LISTING_MAX_ENTRY_ABOVE_HIGH_PCT: ${{ vars.LISTING_MAX_ENTRY_ABOVE_HIGH_PCT || '3.5' }}
           LISTING_MIN_RISK_REWARD: ${{ vars.LISTING_MIN_RISK_REWARD || '1.25' }}
           LISTING_STOP_LOSS_PCT: ${{ vars.LISTING_STOP_LOSS_PCT || '8.0' }}
-          LISTING_MAX_DAYS_SINCE_LISTING: ${{ vars.LISTING_MAX_DAYS_SINCE_LISTING || '365' }}
+          LISTING_MAX_DAYS_SINCE_LISTING: ${{ vars.LISTING_MAX_DAYS_SINCE_LISTING || '750' }}
           MONGO_URI: ${{ secrets.MONGO_URI }}
         run: |
           echo "Environment variables configured"
@@ -106,7 +106,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
-          IPO_YEARS_BACK: ${{ vars.IPO_YEARS_BACK || '1' }}
+          IPO_YEARS_BACK: ${{ vars.IPO_YEARS_BACK || '3' }}
           LISTING_STRICT_QUALITY: ${{ vars.LISTING_STRICT_QUALITY || 'true' }}
           LISTING_CONFIRMATION_MINUTES: ${{ vars.LISTING_CONFIRMATION_MINUTES || '60' }}
           LISTING_MIN_LEADER_SCORE: ${{ vars.LISTING_MIN_LEADER_SCORE || '5' }}
@@ -115,11 +115,11 @@ jobs:
           LISTING_MAX_ENTRY_ABOVE_HIGH_PCT: ${{ vars.LISTING_MAX_ENTRY_ABOVE_HIGH_PCT || '3.5' }}
           LISTING_MIN_RISK_REWARD: ${{ vars.LISTING_MIN_RISK_REWARD || '1.25' }}
           LISTING_STOP_LOSS_PCT: ${{ vars.LISTING_STOP_LOSS_PCT || '8.0' }}
-          LISTING_MAX_DAYS_SINCE_LISTING: ${{ vars.LISTING_MAX_DAYS_SINCE_LISTING || '365' }}
+          LISTING_MAX_DAYS_SINCE_LISTING: ${{ vars.LISTING_MAX_DAYS_SINCE_LISTING || '750' }}
           MONGO_URI: ${{ secrets.MONGO_URI }}
         run: |
           echo "🔄 Fetching recent IPO symbols to MongoDB..."
-          python -c "import os; from fetch import fetch_recent_ipo_symbols; fetch_recent_ipo_symbols(years_back=int(os.environ.get('IPO_YEARS_BACK', 1)))"
+          python -c "import os; from fetch import fetch_recent_ipo_symbols; fetch_recent_ipo_symbols(years_back=int(os.environ.get('IPO_YEARS_BACK', 3)))"
           echo "✅ IPO list updated in MongoDB"
 
           echo "🔄 Updating Upstox ID Mappings..."

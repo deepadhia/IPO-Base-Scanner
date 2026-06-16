@@ -43,7 +43,7 @@ def fetch_recent_ipo_symbols(years_back=3):
                         name_col = col
                 
                 if date_col and symbol_col:
-                    df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+                    df[date_col] = pd.to_datetime(df[date_col], errors='coerce', format='mixed')
                     cutoff = datetime.now() - timedelta(days=365 * years_back)
                     
                     # Filter for recent IPOs

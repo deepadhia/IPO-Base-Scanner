@@ -931,7 +931,36 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None):
             write_daily_log("listing_day", symbol, "REJECTED_BREAKOUT", payload, log_type="REJECTED")
             logger.debug(f"[Telemetry] Logged listing rejection for {symbol}: {reason}")
 
-        # Fetch current data
+        # Get live price first for fast price gate filtering (avoiding expensive fetch_data)
+        current_price = None
+        price_source = "Historical Close"
+        price_is_live = False
+        current_high = 0.0
+
+        try:
+            live_price, live_source, day_high = get_live_price(symbol)
+            if live_price is not None and live_price > 0:
+                current_price = live_price
+                current_high = day_high if day_high else live_price
+                price_source = f"Live ({live_source})"
+                price_is_live = True
+                
+                # Check price floor first
+                if current_price < scanner_module.MIN_ENTRY_PRICE_RS:
+                    logger.info(f"⏭️ Skipping {symbol} - Price ₹{current_price:.2f} is below ₹{scanner_module.MIN_ENTRY_PRICE_RS:.2f} floor")
+                    return None
+                
+                # Fast price gate: if live high is too far below listing high, reject early and avoid downloading history
+                dist_below_high_pct = (listing_day_high - current_high) / listing_day_high * 100.0 if listing_day_high > 0 else 0.0
+                max_allowed_dist = LISTING_TIER_B_MAX_DISTANCE_FROM_HIGH_PCT if LISTING_TIER_B_ENABLED else 5.0
+                
+                if dist_below_high_pct > max_allowed_dist:
+                    logger.info(f"⏭️ Skipping {symbol}: Early price gate: {dist_below_high_pct:.1f}% below listing high (max {max_allowed_dist}%)")
+                    return None
+        except Exception as e:
+            logger.debug(f"Could not get live price early for {symbol}: {e}")
+
+        # Fetch current historical data (only if early price gate passes or live price check failed)
         df = fetch_data(symbol, listing_date)
         
         if df is None or df.empty:
@@ -955,23 +984,20 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None):
         today_date = datetime.today().date()
         days_old = (today_date - latest_date).days
         
-        # CRITICAL: Get LIVE price FIRST for accurate breakout detection.
-        # Note: current_high is already initialized to 0.0 above (closure safe-init).
-        # Overwrite it here with the live value.
-        current_price = None
-        price_source = "Historical Close"
-        price_is_live = False
-        
-        try:
-            live_price, live_source, day_high = get_live_price(symbol)
-            if live_price is not None and live_price > 0:
-                current_price = live_price
-                current_high = day_high if day_high else live_price
-                price_source = f"Live ({live_source})"
-                price_is_live = True
-                logger.info(f"✅ Using live price for {symbol} breakout detection: ₹{current_price:.2f} (High: ₹{current_high:.2f}) from {live_source}")
-        except Exception as e:
-            logger.debug(f"Could not get live price for {symbol}: {e}")
+        # If live price was not retrieved early, try again here or log what we found
+        if not price_is_live:
+            try:
+                live_price, live_source, day_high = get_live_price(symbol)
+                if live_price is not None and live_price > 0:
+                    current_price = live_price
+                    current_high = day_high if day_high else live_price
+                    price_source = f"Live ({live_source})"
+                    price_is_live = True
+                    logger.info(f"✅ Using live price for {symbol} breakout detection: ₹{current_price:.2f} (High: ₹{current_high:.2f}) from {live_source}")
+            except Exception as e:
+                logger.debug(f"Could not get live price for {symbol}: {e}")
+        else:
+            logger.info(f"✅ Using live price for {symbol} breakout detection: ₹{current_price:.2f} (High: ₹{current_high:.2f}) from {price_source}")
         
         # --- INSTITUTIONAL LIQUIDITY GUARDRAIL (Phase 2.5) ---
         avg_turnover_cr, circuit_days_15, mcap_cr = scanner_module.get_liquidity_metrics(symbol, df)

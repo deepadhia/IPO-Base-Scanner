@@ -2639,7 +2639,7 @@ def detect_live_patterns(symbols, listing_map):
                 _nifty_slope_now = None
                 try:
                     from enrichment.market import compute_market_context
-                    _mc = compute_market_context(df["DATE"].iat[j])
+                    _mc = compute_market_context(end_date=df["DATE"].iat[j])
                     _nifty_slope_now = _mc.get("nifty_trend_slope")
                 except Exception:
                     pass
@@ -3201,6 +3201,10 @@ def detect_scan(symbols, listing_map):
                     logger.info(f"⏭️ Skipping {sym} - Market Cap ₹{mcap_cr:.1f}Cr is below ₹{MIN_MARKET_CAP_CR:.1f}Cr floor")
                     continue
                 
+                # Map metric_ keys to standard keys for bucket check
+                metrics["prng"] = metrics.get("metric_prng", prng)
+                metrics["vol_ratio"] = metrics.get("metric_vol_ratio", df["VOLUME"].iat[j] / avgv if avgv > 0 else 0.0)
+
                 # Enrich metrics with liquidity telemetry for logging
                 metrics.update(liquidity_metrics)
 
@@ -3293,7 +3297,7 @@ def detect_scan(symbols, listing_map):
                 _mr = "UNKNOWN"
                 try:
                     from enrichment.market import compute_market_context
-                    _mc = compute_market_context(df["DATE"].iat[j])
+                    _mc = compute_market_context(end_date=df["DATE"].iat[j])
                     _nifty_slope_now = _mc.get("nifty_trend_slope")
                     _mr = get_market_regime(df["DATE"].iat[j])
                 except Exception:

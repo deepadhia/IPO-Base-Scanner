@@ -2,7 +2,7 @@ pandas
 numpy
 requests
 python-dotenv
-yfinance
+yfinance>=0.2.40
 pymongo
 beautifulsoup4==4.9.3
 jugaad-data>=0.27,<0.28
