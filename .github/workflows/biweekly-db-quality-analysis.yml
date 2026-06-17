@@ -36,9 +36,7 @@ jobs:
             done
           }
           python -m pip install --upgrade pip
-          retry 4 pip install --retries 10 --timeout 120 beautifulsoup4==4.9.3
           retry 4 pip install --retries 10 --timeout 120 -r requirements.txt
-          retry 4 pip install --retries 10 --timeout 120 "jugaad-data>=0.27,<0.28"
           echo "✅ Dependencies installed"
 
       - name: Verify MongoDB Connection

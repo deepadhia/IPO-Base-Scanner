@@ -25,8 +25,6 @@ import requests
 import time
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
-from jugaad_data.nse.history import stock_raw
-import pandas as pd
 import threading
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -481,74 +479,7 @@ def auto_refresh_upstox_token():
     except Exception as e:
         logger.error(f"❌ Error refreshing Upstox token: {e}")
 
-def stock_df(symbol, from_date, to_date, series="EQ"):
-    """Custom stock_df function that handles column mapping correctly"""
-    try:
-        # Get raw data
-        raw = stock_raw(symbol, from_date, to_date, series)
-        
-        if not raw:
-            return pd.DataFrame()
-        
-        # Create DataFrame from raw data
-        df = pd.DataFrame(raw)
-        
-        # Map old column names to new ones
-        column_mapping = {
-            'CH_TIMESTAMP': 'DATE',
-            'CH_SERIES': 'SERIES',
-            'CH_OPENING_PRICE': 'OPEN',
-            'CH_TRADE_HIGH_PRICE': 'HIGH',
-            'CH_TRADE_LOW_PRICE': 'LOW',
-            'CH_PREVIOUS_CLS_PRICE': 'PREV. CLOSE',
-            'CH_LAST_TRADED_PRICE': 'LTP',
-            'CH_CLOSING_PRICE': 'CLOSE',
-            'VWAP': 'VWAP',
-            'CH_52WEEK_HIGH_PRICE': '52W H',
-            'CH_52WEEK_LOW_PRICE': '52W L',
-            'CH_TOT_TRADED_QTY': 'VOLUME',
-            'CH_TOT_TRADED_VAL': 'VALUE',
-            'CH_TOTAL_TRADES': 'NO OF TRADES',
-            'CH_SYMBOL': 'SYMBOL'
-        }
-        
-        # Rename columns (only rename columns that exist)
-        existing_mapping = {k: v for k, v in column_mapping.items() if k in df.columns}
-        df = df.rename(columns=existing_mapping)
-        
-        # Select only the columns we need (only if they exist)
-        required_columns = ['DATE', 'SERIES', 'OPEN', 'HIGH', 'LOW', 'PREV. CLOSE', 'LTP', 'CLOSE', 'VWAP', '52W H', '52W L', 'VOLUME', 'VALUE', 'NO OF TRADES', 'SYMBOL']
-        available_columns = [col for col in required_columns if col in df.columns]
-        
-        # Ensure we have at least the essential columns
-        essential_columns = ['DATE', 'OPEN', 'HIGH', 'LOW', 'CLOSE']
-        missing_essential = [col for col in essential_columns if col not in df.columns]
-        if missing_essential:
-            logger.error(f"Missing essential columns in stock_df for {symbol}: {missing_essential}")
-            return pd.DataFrame()
-        
-        # Select available columns
-        df = df[available_columns]
-        
-        # Add LTP if missing (use CLOSE as fallback)
-        if 'LTP' not in df.columns and 'CLOSE' in df.columns:
-            df['LTP'] = df['CLOSE']
-        
-        # Add VOLUME if missing (set to 0)
-        if 'VOLUME' not in df.columns:
-            df['VOLUME'] = 0
-        
-        # Convert DATE to datetime
-        df['DATE'] = pd.to_datetime(df['DATE'])
-        
-        return df
-        
-    except Exception as e:
-        error_msg = str(e)
-        logger.error(f"Error in custom stock_df for {symbol}: {error_msg}")
-        if "Expecting value" in error_msg or "Max retries exceeded" in error_msg:
-            return "FATAL_API_ERROR"
-        return pd.DataFrame()
+
 from fetch import fetch_recent_ipo_symbols
 # Import only the functions we need, not the entire module
 import sys

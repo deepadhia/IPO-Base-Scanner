@@ -66,12 +66,8 @@ jobs:
             done
           }
           python -m pip install --upgrade pip
-          echo "Installing beautifulsoup4==4.9.3 first..."
-          retry 4 pip install --retries 10 --timeout 120 beautifulsoup4==4.9.3
           echo "Installing main dependencies..."
           retry 4 pip install --retries 10 --timeout 120 -r requirements.txt
-          echo "Installing jugaad-data..."
-          retry 4 pip install --retries 10 --timeout 120 "jugaad-data>=0.27,<0.28"
           echo "Dependencies installed."
 
       - name: Validate environment
