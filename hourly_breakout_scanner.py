@@ -366,8 +366,28 @@ def detect_intraday_breakout(df, symbol):
         
         # Only trigger if we have a clear breakout
         if is_breakout and breakout_strength >= 2:
+            # Guard: Reject flat / circuit-locked consolidation bases.
+            # Placed INSIDE the breakout block so that symbols with no breakout
+            # signal return None (not a rejected dict) and do not generate
+            # spurious REJECTED_BREAKOUT log entries.
             consolidation_range = consolidation_high - consolidation_low
-            
+            min_consolidation_pct = 0.0025  # 0.25% floor
+            if consolidation_range <= 0 or (consolidation_range / consolidation_low) < min_consolidation_pct:
+                logger.info(f"⏭️ Rejecting {symbol} - Flat consolidation base detected (range: ₹{consolidation_range:.2f}, Low: ₹{consolidation_low:.2f})")
+                return {
+                    'rejected': True,
+                    'reason': 'flat_consolidation',
+                    'failing_metric': 'consolidation_range_pct',
+                    'failing_value': round((consolidation_range / consolidation_low * 100) if consolidation_low > 0 else 0, 4),
+                    'threshold': f'>={min_consolidation_pct * 100}%',
+                    'metrics': {
+                        'consolidation_low': round(consolidation_low, 2),
+                        'consolidation_high': round(consolidation_high, 2),
+                        'consolidation_range': round(consolidation_range, 2),
+                    },
+                    'volume_ratio': round(current_volume / avg_volume, 2) if avg_volume > 0 else 0.0
+                }
+
             # Entry price: Use LIVE price if available, otherwise current price
             entry_price = current_price
             
@@ -382,10 +402,52 @@ def detect_intraday_breakout(df, symbol):
             # Target (based on consolidation range) - add 50% of range above consolidation high
             target_price = consolidation_high + (consolidation_range * 0.5)
             
+            # P0-1 Safety Guard: target must be at least entry_price * 1.05 (minimum 5% profit objective for intraday)
+            min_target_price = entry_price * 1.05
+            if target_price < min_target_price:
+                logger.info(f"🛡️ Adjusting target for {symbol} to minimum 5% profit objective: ₹{min_target_price:.2f} (was ₹{target_price:.2f})")
+                target_price = min_target_price
+            
             # Risk/Reward
             risk = entry_price - stop_loss
             reward = target_price - entry_price
-            risk_reward = reward / risk if risk > 0 else 0
+            
+            if risk <= 0:
+                logger.info(f"⏭️ Rejecting {symbol} - Invalid risk <= 0 (entry: ₹{entry_price:.2f}, stop: ₹{stop_loss:.2f})")
+                return {
+                    'rejected': True,
+                    'reason': 'invalid_risk',
+                    'failing_metric': 'risk',
+                    'failing_value': round(risk, 2),
+                    'threshold': '>0',
+                    'metrics': {
+                        'entry_price': round(entry_price, 2),
+                        'stop_loss': round(stop_loss, 2),
+                    },
+                    'volume_ratio': round(current_volume / avg_volume, 2) if avg_volume > 0 else 0.0
+                }
+                
+            risk_reward = reward / risk
+            MIN_RISK_REWARD = getattr(scanner_module, 'MIN_RISK_REWARD', 1.3)
+            
+            if risk_reward < MIN_RISK_REWARD:
+                logger.info(f"⏭️ Rejecting {symbol} - poor risk/reward 1:{risk_reward:.2f} (< {MIN_RISK_REWARD:.2f})")
+                return {
+                    'rejected': True,
+                    'reason': 'poor_risk_reward',
+                    'failing_metric': 'risk_reward_ratio',
+                    'failing_value': round(risk_reward, 2),
+                    'threshold': f'>={MIN_RISK_REWARD:.2f}',
+                    'metrics': {
+                        'entry_price': round(entry_price, 2),
+                        'stop_loss': round(stop_loss, 2),
+                        'target_price': round(target_price, 2),
+                        'risk': round(risk, 2),
+                        'reward': round(reward, 2),
+                        'risk_reward': round(risk_reward, 2),
+                    },
+                    'volume_ratio': round(current_volume / avg_volume, 2) if avg_volume > 0 else 0.0
+                }
             
             logger.info(f"📊 {symbol} Breakout Levels:")
             logger.info(f"   Consolidation: ₹{consolidation_low:.2f} - ₹{consolidation_high:.2f}")
@@ -586,7 +648,7 @@ def scan_watchlist():
             # Detect breakout
             breakout = detect_intraday_breakout(df, symbol)
             
-            if breakout:
+            if breakout and not breakout.get('rejected'):
                 logger.info(f"🎯 BREAKOUT DETECTED for {symbol}!")
                 write_daily_log("watchlist", symbol, "SIGNAL_GENERATED", {
                     "entry": breakout.get("entry_price"),
@@ -615,14 +677,24 @@ def scan_watchlist():
                 
                 # Small delay to avoid rate limiting
                 time.sleep(0.5)
+            elif breakout and breakout.get('rejected'):
+                logger.info(f"⏭️ {symbol}: Breakout rejected - {breakout.get('reason')}")
+                write_daily_log("watchlist", symbol, "REJECTED_BREAKOUT", {
+                    "rejection_reason": breakout.get("reason"),
+                    "failing_metric": breakout.get("failing_metric"),
+                    "failing_value": breakout.get("failing_value"),
+                    "threshold": breakout.get("threshold"),
+                    "metrics": breakout.get("metrics"),
+                    "volume_ratio": breakout.get("volume_ratio"),
+                }, log_type="REJECTED")
             else:
                 logger.info(f"✅ {symbol}: No breakout detected")
                 write_daily_log("watchlist", symbol, "REJECTED_BREAKOUT", {
                     "rejection_reason": "no_intraday_breakout",
                     "failing_metric": "breakout",
-                    "failing_value": breakout if breakout is not None else 0,
+                    "failing_value": 0,
                     "threshold": "breakout_strength>=2 and price>recent_high",
-                    "metrics": {"breakout": breakout},
+                    "metrics": {"breakout": None},
                     "volume_ratio": None,
                 }, log_type="REJECTED")
             

@@ -96,7 +96,12 @@ def fetch_recent_ipo_symbols(years_back=3):
                             except Exception:
                                 pass
                                 
-                            if close_price is not None and close_price < 25.0:
+                            # Skip symbols where price lookup failed (possibly delisted, suspended, or no data)
+                            if close_price is None:
+                                print(f"  [Skip] Excluding {sym} — price lookup failed (possibly delisted or suspended)")
+                                continue
+
+                            if close_price < 25.0:
                                 print(f"  [Skip] Filtering out penny stock from fetch: {sym} (Price Rs.{close_price:.2f} < Rs.25.00)")
                                 continue
                                 
@@ -104,6 +109,7 @@ def fetch_recent_ipo_symbols(years_back=3):
                             if name_col:
                                 valid_companies.append(companies[idx_sym])
                             valid_dates.append(dates[idx_sym])
+
                             
                         symbols = valid_symbols
                         companies = valid_companies if name_col else symbols
