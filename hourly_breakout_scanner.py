@@ -22,6 +22,13 @@ import logging
 # Load environment
 load_dotenv()
 
+# Force UTF-8 encoding on standard output for Windows console compatibility
+if hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
 # Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -129,6 +136,10 @@ def fetch_intraday_data_yfinance(symbol, interval=INTRADAY_INTERVAL):
         
         # Fetch intraday data (max 7 days for intraday)
         period = min(LOOKBACK_DAYS, 7)
+        try:
+            scanner_module.network_call_made = True
+        except Exception:
+            pass
         df = ticker.history(period=f"{period}d", interval=yf_interval)
         
         if df.empty:
@@ -203,6 +214,10 @@ def fetch_intraday_data_upstox(symbol, interval=INTRADAY_INTERVAL):
         url = f"https://api.upstox.com/v2/historical-candle/{instrument_key}/{interval}/{to_str}/{from_str}"
         
         logger.info(f"🔄 Fetching intraday data for {symbol} ({interval})...")
+        try:
+            scanner_module.network_call_made = True
+        except Exception:
+            pass
         response = requests.get(url, headers=headers, timeout=30)
         
         # Handle rate limiting
@@ -288,7 +303,7 @@ def compute_rsi(close, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-def detect_intraday_breakout(df, symbol):
+def detect_intraday_breakout(df, symbol, bulk_prices=None):
     """Detect intraday breakout patterns using LIVE prices for accurate detection"""
     if df is None or len(df) < 20:
         return None
@@ -318,16 +333,19 @@ def detect_intraday_breakout(df, symbol):
         avg_volume = historical_df['VOLUME'].mean() if len(historical_df) > 0 else current_volume
         
         # CRITICAL: Get LIVE price for accurate breakout detection.
-        # P0-6 Fix: Use module-level get_live_price (imported at top) instead of
-        # re-loading the entire scanner_module per symbol call (was O(N) module loads).
         live_price = None
         live_source = "Historical"
-        try:
-            live_price, live_source, _ = get_live_price(symbol)
-            if live_price is not None and live_price > 0:
-                logger.info(f"✅ Using live price for {symbol} breakout detection: ₹{live_price:.2f} ({live_source})")
-        except Exception as e:
-            logger.debug(f"Could not get live price for {symbol}: {e}")
+        if bulk_prices and symbol in bulk_prices:
+            live_price, _ = bulk_prices[symbol]
+            live_source = "Upstox-Bulk"
+            logger.info(f"✅ Using live price for {symbol} breakout detection: ₹{live_price:.2f} (Upstox-Bulk)")
+        else:
+            try:
+                live_price, live_source, _, _vol = get_live_price(symbol)
+                if live_price is not None and live_price > 0:
+                    logger.info(f"✅ Using live price for {symbol} breakout detection: ₹{live_price:.2f} ({live_source})")
+            except Exception as e:
+                logger.debug(f"Could not get live price for {symbol}: {e}")
         
         # Use live price if available, otherwise use latest historical close
         if live_price is not None:
@@ -632,11 +650,24 @@ def scan_watchlist():
     
     logger.info(f"📋 Scanning {len(symbols)} symbols...")
     
+    # Pre-fetch live prices in bulk from Upstox to minimize sequential API calls
+    bulk_prices = {}
+    try:
+        bulk_prices = getattr(scanner_module, 'get_bulk_live_prices_upstox', lambda x: {})(symbols)
+        if bulk_prices:
+            logger.info(f"⚡ Pre-fetched live prices in bulk for {len(bulk_prices)}/{len(symbols)} symbols")
+    except Exception as bulk_err:
+        logger.warning(f"Failed to pre-fetch bulk live prices: {bulk_err}")
+        
     breakouts_found = 0
     
     for i, symbol in enumerate(symbols, 1):
         logger.info(f"\n[{i}/{len(symbols)}] Scanning {symbol}...")
         
+        # Reset network call flag for this symbol iteration
+        if hasattr(scanner_module, 'network_call_made'):
+            scanner_module.network_call_made = False
+            
         try:
             # Fetch intraday data (tries Upstox first, then yfinance)
             df = fetch_intraday_data(symbol)
@@ -646,7 +677,7 @@ def scan_watchlist():
                 continue
             
             # Detect breakout
-            breakout = detect_intraday_breakout(df, symbol)
+            breakout = detect_intraday_breakout(df, symbol, bulk_prices)
             
             if breakout and not breakout.get('rejected'):
                 logger.info(f"🎯 BREAKOUT DETECTED for {symbol}!")
@@ -698,8 +729,9 @@ def scan_watchlist():
                     "volume_ratio": None,
                 }, log_type="REJECTED")
             
-            # Rate limiting between symbols
-            time.sleep(0.3)
+            # Rate limiting between symbols - only sleep if network request made
+            if getattr(scanner_module, 'network_call_made', False):
+                time.sleep(0.3)
         
         except Exception as e:
             logger.error(f"Error scanning {symbol}: {e}")

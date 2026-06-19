@@ -83,7 +83,7 @@ try:
         doc = listing_data_col.find_one({}, {"_id": 0, "symbol": 1})
         if doc:
             test_symbol = doc['symbol']
-            price, source, _ = scanner_module.get_live_price(test_symbol)
+            price, source, _, _vol = scanner_module.get_live_price(test_symbol)
             if price:
                 print(f"   [OK] Live price fetch successful for {test_symbol}")
                 print(f"      Price: Rs.{price:.2f}, Source: {source}")

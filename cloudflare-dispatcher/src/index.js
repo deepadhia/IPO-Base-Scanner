@@ -12,7 +12,7 @@
  *   GITHUB_PAT   — Personal Access Token with `workflow` scope
  *
  * Cron trigger (defined in wrangler.toml):
- *   "* /15 3-10 * * 1-5"  — every 15 min, 03:00-10:59 UTC, Mon-Fri
+ *   "* /15 3-10 * * 1-6"  — every 15 min, 03:00-10:59 UTC, Mon-Sat
  *   (Note: space in cron expression above is only for safe display inside JS comments)
  *
  * Schedule fired → Worker checks UTC hour:minute → dispatches workflow(s)
@@ -30,7 +30,7 @@ const GITHUB_DISPATCH_URL = (workflow) =>
 /**
  * Dispatch schedule map.
  * Key:   "HH:MM" in UTC
- * Value: array of workflow filenames to dispatch at that time (Mon–Fri only)
+ * Value: array of workflow filenames to dispatch at that time (Mon–Sat only)
  *
  * Mirrors the cron expressions in .github/workflows/*.yml exactly:
  *
@@ -133,9 +133,9 @@ export default {
 
     console.log(`[Dispatcher] Tick at ${triggerTime.toISOString()} | day=${utcDay} key=${timeKey}`);
 
-    // Guard: weekdays only (Mon=1 … Fri=5)
-    if (utcDay === 0 || utcDay === 6) {
-      console.log("[Dispatcher] Weekend — no dispatch.");
+    // Guard: weekdays only (Mon=1 … Sat=6)
+    if (utcDay === 0) {
+      console.log("[Dispatcher] Sunday — no dispatch.");
       return;
     }
 

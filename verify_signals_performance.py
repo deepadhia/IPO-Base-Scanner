@@ -111,7 +111,7 @@ def analyze_signals(version=None):
         current_price = None
         price_source = "Unknown"
         try:
-            current_price, price_source, _ = get_live_price(symbol)
+            current_price, price_source, _, _vol = get_live_price(symbol)
             if current_price:
                 print(f"   Current Price: ₹{current_price:.2f} ({price_source})")
         except Exception as e:
@@ -261,7 +261,7 @@ def analyze_positions(version=None):
         live_price = None
         price_source = "Unknown"
         try:
-            live_price, price_source, _ = get_live_price(symbol)
+            live_price, price_source, _, _vol = get_live_price(symbol)
             if live_price:
                 print(f"   Current Live Price: ₹{live_price:.2f} ({price_source})")
                 print(f"   Stored Price: ₹{current_price:.2f}")

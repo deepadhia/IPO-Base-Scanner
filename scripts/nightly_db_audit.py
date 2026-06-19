@@ -239,7 +239,7 @@ def run_nightly_audit():
             stored_price = pos.get("current_price")
             if stored_price is not None and stored_price > 0:
                 try:
-                    live_price, _, _ = get_live_price(sym)
+                    live_price, _, _, _vol = get_live_price(sym)
                     if live_price is not None and live_price > 0:
                         diff_pct = abs(live_price - stored_price) / stored_price * 100.0
                         if diff_pct > 20.0:

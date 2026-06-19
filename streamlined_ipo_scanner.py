@@ -745,8 +745,12 @@ def get_liquidity_metrics(symbol, df):
         df_copy['is_circuit'] = (df_copy['HIGH'] == df_copy['LOW']) & (df_copy['VOLUME'] > 0)
         circuit_days = int(df_copy['is_circuit'].tail(15).sum())
         
-        # 3. Market Cap from yfinance
-        mcap_cr = 0
+        # 3. Market Cap from cache or yfinance
+        mcap_cr = _market_cap_cache.get(symbol, 0)
+        if mcap_cr != 0:
+            # -1 is a cached failure, return 0.0 for calculations while retaining cache bypass
+            return avg_turnover_cr, circuit_days, max(0.0, mcap_cr)
+                
         if YFINANCE_AVAILABLE:
             with _yfinance_lock:
                 current_time = time.time()
@@ -759,12 +763,30 @@ def get_liquidity_metrics(symbol, df):
                     mcap = ticker.info.get('marketCap')
                     if mcap:
                         mcap_cr = round(mcap / 10000000, 2)
+                    else:
+                        mcap_cr = -1.0
+                    
+                    _market_cap_cache[symbol] = mcap_cr
+                    # Save to MongoDB cache
+                    try:
+                        from db import update_cached_market_cap
+                        update_cached_market_cap(symbol, mcap_cr)
+                    except Exception as cache_err:
+                        logger.debug(f"Could not update cached market cap for {symbol}: {cache_err}")
                 except Exception as e:
                     logger.debug(f"Could not fetch market cap for {symbol}: {e}")
+                    # Cache the failure permanently as -1.0
+                    mcap_cr = -1.0
+                    _market_cap_cache[symbol] = mcap_cr
+                    try:
+                        from db import update_cached_market_cap
+                        update_cached_market_cap(symbol, mcap_cr)
+                    except:
+                        pass
                 
                 _yfinance_last_request = time.time()
                 
-        return avg_turnover_cr, circuit_days, mcap_cr
+        return avg_turnover_cr, circuit_days, max(0.0, mcap_cr)
     except Exception as e:
         logger.warning(f"⚠️ Error calculating liquidity metrics for {symbol}: {e}")
         return 0, 0, 0
@@ -1435,8 +1457,13 @@ def get_live_price_upstox(symbol):
                         live_price = info.get('last_price')
                         ohlc = info.get('ohlc', {})
                         day_high = ohlc.get('high')
+                        day_volume = info.get('volume', 0) or 0
                         if live_price is not None:
-                            return float(live_price), (float(day_high) if day_high is not None else float(live_price))
+                            return (
+                                float(live_price),
+                                float(day_high) if day_high is not None else float(live_price),
+                                float(day_volume)
+                            )
         
         return None
     except Exception as e:
@@ -1467,14 +1494,16 @@ def get_live_price_yfinance(symbol):
         if hasattr(info, 'lastPrice') and info.lastPrice:
             lp = float(info.lastPrice)
             dh = float(info.dayHigh) if hasattr(info, 'dayHigh') and info.dayHigh is not None else lp
-            return lp, dh
+            dv = float(info.dayVolume) if hasattr(info, 'dayVolume') and info.dayVolume is not None else 0.0
+            return lp, dh, dv
         
         # Fallback: Get latest quote
         data = ticker.history(period="1d", interval="1m")
         if not data.empty:
             last_price = float(data['Close'].iloc[-1])
             day_high = float(data['High'].max())
-            return last_price, day_high
+            day_volume = float(data['Volume'].sum()) if 'Volume' in data.columns else 0.0
+            return last_price, day_high, day_volume
         
         return None
     except Exception as e:
@@ -1492,6 +1521,8 @@ def get_live_price(symbol, prefer_source=None):
     
     Returns: (price, source_name) or (None, None) if all fail
     """
+    global network_call_made
+    network_call_made = True
     sources = []
     
     # Determine source priority
@@ -1505,23 +1536,148 @@ def get_live_price(symbol, prefer_source=None):
         try:
             result = fetch_func(symbol)
             if result is not None:
-                price, day_high = result
+                if len(result) == 3:
+                    price, day_high, day_volume = result
+                else:
+                    price, day_high = result
+                    day_volume = 0.0
                 if price > 0:
                     logger.info(f"✅ Got live price for {symbol} from {source_name}: Rs.{price:.2f} (High: Rs.{day_high:.2f})")
-                    return price, source_name, day_high
+                    return price, source_name, day_high, day_volume
         except Exception as e:
             logger.debug(f"Failed to get price from {source_name} for {symbol}: {e}")
             continue
     
     logger.warning(f"⚠️ Could not fetch live price for {symbol} from any source")
-    return None, None, None
+    return None, None, None, 0.0
 
-def fetch_data(symbol, start_date):
-    """Fetch the most recent available data for a symbol using Upstox API with NSE fallback (jugaad-data)"""
-    import time  # Import at the top of function
+
+network_call_made = False
+_market_cap_cache = {}
+
+
+class BulkPriceQuote:
+    def __init__(self, close, high, low, open_val, volume):
+        self.close = float(close)
+        self.high = float(high)
+        self.low = float(low)
+        self.open = float(open_val)
+        self.volume = float(volume)
+
+    def __iter__(self):
+        return iter((self.close, self.high))
+
+    def __len__(self):
+        return 2
+
+    def __getitem__(self, index):
+        if index == 0:
+            return self.close
+        elif index == 1:
+            return self.high
+        raise IndexError("Index out of bounds")
+
+    def __repr__(self):
+        return f"BulkPriceQuote(close={self.close}, high={self.high}, low={self.low}, open={self.open}, volume={self.volume})"
+
+
+def get_bulk_live_prices_upstox(symbols):
+    """
+    Fetch live prices for a list of symbols in bulk from Upstox.
+    Returns a dict of symbol -> BulkPriceQuote.
+    """
+    try:
+        from db import get_instrument_key_mapping
+        mapping = get_instrument_key_mapping()
+    except Exception as e:
+        logger.warning(f"Could not load instrument key mapping for bulk fetch: {e}")
+        return {}
+
+    # Map symbols to instrument keys
+    keys_to_fetch = []
+    key_to_symbol = {}
+    for sym in symbols:
+        key = mapping.get(sym)
+        if key:
+            keys_to_fetch.append(key)
+            key_to_symbol[key] = sym
+            # Also register NSE_EQ:symbol style keys
+            key_to_symbol[f"NSE_EQ:{sym}"] = sym
+
+    if not keys_to_fetch:
+        return {}
+
+    access_token = os.getenv('UPSTOX_ACCESS_TOKEN')
+    if not access_token:
+        return {}
+
+    headers = {
+        'Accept': 'application/json',
+        'Api-Version': '2.0',
+        'Authorization': f'Bearer {access_token}'
+    }
+
+    results = {}
+    # Batch size of 50 is recommended for Upstox API
+    batch_size = 50
+    for i in range(0, len(keys_to_fetch), batch_size):
+        batch_keys = keys_to_fetch[i:i+batch_size]
+        keys_str = ",".join(batch_keys)
+        url = f'https://api.upstox.com/v2/market-quote/quotes?instrument_key={keys_str}'
+
+        # Rate limiting: 200ms delay between bulk requests
+        import time
+        global _upstox_last_request
+        with _upstox_lock:
+            current_time = time.time()
+            time_since_last = current_time - _upstox_last_request
+            if time_since_last < 0.2:
+                time.sleep(0.2 - time_since_last)
+            _upstox_last_request = time.time()
+
+        try:
+            response = requests.get(url, headers=headers, timeout=15)
+            if response.status_code == 200:
+                data = response.json()
+                if 'data' in data and data['data']:
+                    for res_key, info in data['data'].items():
+                        # Find corresponding symbol
+                        sym = key_to_symbol.get(res_key)
+                        if not sym:
+                            res_token = info.get('instrument_token')
+                            sym = key_to_symbol.get(res_token)
+                        
+                        if sym:
+                            live_price = info.get('last_price')
+                            ohlc = info.get('ohlc', {})
+                            day_high = ohlc.get('high')
+                            day_low = ohlc.get('low')
+                            day_open = ohlc.get('open')
+                            volume = info.get('volume')
+                            
+                            if live_price is not None:
+                                close_val = float(live_price)
+                                high_val = float(day_high) if day_high is not None else close_val
+                                low_val = float(day_low) if day_low is not None else close_val
+                                open_val = float(day_open) if day_open is not None else close_val
+                                volume_val = float(volume) if volume is not None else 0.0
+                                
+                                results[sym] = BulkPriceQuote(close_val, high_val, low_val, open_val, volume_val)
+        except Exception as e:
+            logger.warning(f"Error in bulk live price fetch batch: {e}")
+            continue
+
+    return results
+
+
+def fetch_data(symbol, start_date, live_today_data=None):
+    """Fetch the most recent available data for a symbol using Upstox API with MongoDB cache and fallback"""
+    global network_call_made  # declared at top so all branches can assign it without SyntaxError
+    import time
+    from datetime import datetime, date, timedelta
+    from db import get_cached_candles, upsert_cached_candles
     
     # Skip RE (Real Estate Investment Trusts) shares as they're not suitable for IPO breakout patterns
-    # Optimization: Ignore Rights Entitlements (-RE) and SME (-SM) segments
     if '-RE' in symbol or symbol.endswith('-SM') or 'RE1' in symbol:
         logger.warning(f"Skipping RE/SME share: {symbol}")
         return None
@@ -1537,24 +1693,171 @@ def fetch_data(symbol, start_date):
         
         today = datetime.today().date()
         
+        # 1. Check MongoDB cache first
+        cache_hit = False
+        cached_df = None
+        
+        cache_doc = get_cached_candles(symbol)
+        if cache_doc and "market_cap_cr" in cache_doc:
+            _market_cap_cache[symbol] = cache_doc["market_cap_cr"]
+        if cache_doc and "candles" in cache_doc and cache_doc["candles"]:
+            # Check freshness of cache
+            last_completed_str = cache_doc.get("last_completed_date")
+            if last_completed_str:
+                last_completed = pd.to_datetime(last_completed_str).date()
+                
+                # Determine last completed trading day (walking back from today,
+                # skipping weekends AND NSE holidays to avoid false cache-staleness).
+                def _prev_trading_day(d):
+                    """Return the most recent completed trading day before `d`."""
+                    candidate = d - timedelta(days=1)
+                    for _ in range(10):  # safety limit — no 10-day holiday streak
+                        if (candidate.weekday() < 5 and
+                                candidate.strftime("%Y-%m-%d") not in NSE_HOLIDAYS):
+                            return candidate
+                        candidate -= timedelta(days=1)
+                    return d - timedelta(days=1)  # fallback
+                
+                last_completed_trading_day = _prev_trading_day(today)
+                
+                # Check if cache has the last completed trading day
+                if last_completed >= last_completed_trading_day:
+                    # Cache is fresh! Load and construct DataFrame
+                    candles_list = cache_doc["candles"]
+                    cached_df = pd.DataFrame(candles_list)
+                    cached_df['DATE'] = pd.to_datetime(cached_df['DATE'])
+                    
+                    # Convert columns to float
+                    for col in ['OPEN', 'HIGH', 'LOW', 'CLOSE', 'VOLUME', 'LTP']:
+                        if col in cached_df.columns:
+                            cached_df[col] = pd.to_numeric(cached_df[col], errors='coerce').astype(float)
+                    
+                    cached_df = cached_df.sort_values('DATE').reset_index(drop=True)
+                    # Keep track of cached market cap in DataFrame attributes
+                    if "market_cap_cr" in cache_doc:
+                        cached_df.attrs["market_cap_cr"] = cache_doc["market_cap_cr"]
+                    cache_hit = True
+                    logger.debug(f"⚡ Cache HIT for {symbol} (up to {last_completed_str})")
+        
+        # 2. Reconstruct/Fetch logic
+        df = None
+        if cache_hit and cached_df is not None:
+            df = cached_df.copy()
+            # If we need to enrich with today's live data (during market hours, or if today is not in cache)
+            if df.empty or df.iloc[-1]['DATE'].date() < today:
+                # If we have live_today_data, append it
+                if live_today_data is not None:
+                    # Extract open, high, low, close, volume from BulkPriceQuote or dict/tuple
+                    try:
+                        if hasattr(live_today_data, 'open'):
+                            open_val = float(live_today_data.open)
+                            high_val = float(live_today_data.high)
+                            low_val = float(live_today_data.low)
+                            close_val = float(live_today_data.close)
+                            volume_val = float(live_today_data.volume)
+                        elif hasattr(live_today_data, '__getitem__'):
+                            close_val = float(live_today_data[0])
+                            high_val = float(live_today_data[1])
+                            open_val = 0.0
+                            low_val = 0.0
+                            volume_val = 0.0
+                            if len(live_today_data) >= 5:
+                                low_val = float(live_today_data[2])
+                                open_val = float(live_today_data[3])
+                                volume_val = float(live_today_data[4])
+                        else:
+                            open_val = 0.0
+                            high_val = 0.0
+                            low_val = 0.0
+                            close_val = 0.0
+                            volume_val = 0.0
+                    except Exception as e:
+                        logger.warning(f"Error parsing live_today_data for {symbol}: {e}")
+                        close_val = 0.0
+                    
+                    if close_val > 0:
+                        today_row = pd.DataFrame([{
+                            'DATE': pd.to_datetime(today),
+                            'OPEN': open_val,
+                            'HIGH': high_val,
+                            'LOW': low_val,
+                            'CLOSE': close_val,
+                            'VOLUME': volume_val,
+                            'LTP': close_val
+                        }])
+                        df = pd.concat([df, today_row], ignore_index=True)
+                        logger.debug(f"➕ Appended live today's partial candle for {symbol} (Price: {close_val}, Vol: {volume_val:,.0f})")
+                else:
+                    # If live_today_data not passed but today's candle is needed, we check if it's market hours
+                    from datetime import time as dt_time
+                    now_ist = datetime.utcnow() + timedelta(hours=5, minutes=30)
+                    if now_ist.time() < dt_time(15, 45):
+                        try:
+                            # Mark network call since get_live_price hits the Upstox/yfinance API
+                            network_call_made = True
+                            live_price, live_source, day_high, day_volume = get_live_price(symbol)
+                            if live_price is not None and live_price > 0:
+                                today_row = pd.DataFrame([{
+                                    'DATE': pd.to_datetime(today),
+                                    'OPEN': live_price,
+                                    'HIGH': day_high if day_high else live_price,
+                                    'LOW': live_price,
+                                    'CLOSE': live_price,
+                                    'VOLUME': day_volume,
+                                    'LTP': live_price
+                                }])
+                                df = pd.concat([df, today_row], ignore_index=True)
+                        except Exception as e:
+                            logger.debug(f"Could not get live price fallback for {symbol} cache enrichment: {e}")
+            
+            df.attrs['data_source'] = 'MongoDB Cache'
+            return df
+            
+        # Cache miss or stale -> fetch from API
+        network_call_made = True
+        logger.info(f"🔄 Cache MISS/STALE for {symbol}, fetching fresh history...")
+        
         # Try Upstox API first (if available)
         df = fetch_from_upstox(symbol, start_date, today)
         if df is not None and not df.empty:
-            logger.info(f"✅ Upstox API: Got data for {symbol} ({len(df)} rows)")
+            logger.info(f"✅ Upstox API: Got fresh data for {symbol} ({len(df)} rows)")
             df.attrs['data_source'] = 'Upstox API'
+        else:
+            # Fallback to Yahoo Finance
+            logger.warning(f"⚠️ Upstox API failed for {symbol}, trying YFinance fallback")
+            df = fetch_from_yfinance(symbol, start_date, today)
+            if df is not None and not df.empty:
+                logger.info(f"✅ YFinance Fallback: Got data for {symbol} ({len(df)} rows)")
+                df.attrs['data_source'] = 'Yahoo Finance'
+        
+        if df is not None and not df.empty:
+            # Update cache with completed candles
+            try:
+                # Determine what candles to cache
+                completed_df = df[df['DATE'].dt.date < today].copy()
+                from datetime import time as dt_time  # needed in both cache-hit and API-miss paths
+                now_ist = datetime.utcnow() + timedelta(hours=5, minutes=30)
+                if df.iloc[-1]['DATE'].date() == today and now_ist.time() >= dt_time(15, 45):
+                    completed_df = df.copy()
+                
+                if not completed_df.empty:
+                    last_completed_date = completed_df.iloc[-1]['DATE'].date().strftime('%Y-%m-%d')
+                    
+                    # Convert to records for serialization
+                    records = completed_df.copy()
+                    records['DATE'] = records['DATE'].dt.strftime('%Y-%m-%d')
+                    candles_list = records.to_dict(orient='records')
+                    
+                    upsert_cached_candles(symbol, last_completed_date, candles_list)
+                    logger.info(f"💾 Cached {len(completed_df)} candles for {symbol} up to {last_completed_date} in MongoDB")
+            except Exception as cache_save_err:
+                logger.warning(f"Failed to save candles cache for {symbol}: {cache_save_err}")
+                
             return df
         
-        # Primary Fallback: Yahoo Finance (Simplified and Reliable)
-        logger.warning(f"⚠️ Upstox API failed for {symbol}, trying YFinance fallback")
-        df = fetch_from_yfinance(symbol, start_date, today)
-        if df is not None and not df.empty:
-            logger.info(f"✅ YFinance Fallback: Got data for {symbol} ({len(df)} rows)")
-            df.attrs['data_source'] = 'Yahoo Finance'
-            return df
-
         logger.warning(f"❌ No data found for {symbol} (Upstox & YFinance both failed)")
         return None
-            
+        
     except Exception as e:
         logger.error(f"Error fetching data for {symbol}: {e}")
         return None
@@ -1613,7 +1916,7 @@ def update_positions():
         
         # Try to get live price first (more accurate for exit decisions)
         try:
-            live_price, live_source, _ = get_live_price(sym)
+            live_price, live_source, _, _vol = get_live_price(sym)
             if live_price is not None and live_price > 0:
                 current_price = live_price
                 price_source = f"Live ({live_source})"
@@ -2102,7 +2405,7 @@ def detect_live_patterns(symbols, listing_map):
                 if j == len(df) - 1:
                     # This is the latest candle - check LIVE price for breakout
                     if is_market_hours():
-                        live_price, _, _ = get_live_price(sym)
+                        live_price, _, _, _vol = get_live_price(sym)
                     else:
                         live_price = float(df["CLOSE"].iloc[-1])
                     if live_price is not None and live_price > high2:
@@ -2277,7 +2580,7 @@ def detect_live_patterns(symbols, listing_map):
                 # For live signals, ALWAYS use CURRENT market price as entry price
                 # This ensures entry price matches what user would actually pay NOW
                 # Try multiple sources: Upstox -> yfinance -> jugaad-data -> latest close
-                live_price, price_source_name, _ = get_live_price(sym)
+                live_price, price_source_name, _, _vol = get_live_price(sym)
                 price_is_live = False
                 if live_price is not None:
                     entry = live_price
@@ -2785,7 +3088,7 @@ def detect_live_patterns(symbols, listing_map):
                 # Get current/live price for verification (try to get fresh price)
                 current_price_display = entry  # Entry price is the current/reference price
                 try:
-                    live_check, live_source, _ = get_live_price(sym)
+                    live_check, live_source, _, _vol = get_live_price(sym)
                     if live_check is not None:
                         current_price_display = live_check
                         source_emojis = {
@@ -3021,7 +3324,7 @@ def detect_scan(symbols, listing_map):
                 if j == len(df) - 1:
                     # Live candle
                     if is_market_hours():
-                        live_price, _, _ = get_live_price(sym)
+                        live_price, _, _, _vol = get_live_price(sym)
                     else:
                         live_price = float(df["CLOSE"].iloc[-1])
                     if live_price is not None and live_price > high2:
@@ -3076,7 +3379,7 @@ def detect_scan(symbols, listing_map):
                 # For live signals, ALWAYS use CURRENT market price as entry price
                 # This ensures entry price matches what user would actually pay NOW
                 # Try multiple sources: Upstox -> yfinance -> jugaad-data -> latest close
-                live_price, price_source_name, _ = get_live_price(sym)
+                live_price, price_source_name, _, _vol = get_live_price(sym)
                 price_is_live = False
                 if live_price is not None:
                     entry = live_price
@@ -3369,7 +3672,7 @@ def detect_scan(symbols, listing_map):
                 current_price_display = entry
                 price_source_display = price_source
                 try:
-                    live_check, live_source, _ = get_live_price(sym)
+                    live_check, live_source, _, _vol = get_live_price(sym)
                     if live_check is not None:
                         current_price_display = live_check
                         source_emojis = {
@@ -3749,7 +4052,7 @@ def stop_loss_update_scan():
             
             # Try to get live price first (more accurate for exit decisions)
             try:
-                live_price, live_source, _ = get_live_price(sym)
+                live_price, live_source, _, _vol = get_live_price(sym)
                 if live_price is not None and live_price > 0:
                     current_price = live_price
                     price_source = f"Live ({live_source})"

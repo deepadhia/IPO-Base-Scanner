@@ -23,6 +23,13 @@ from dotenv import load_dotenv
 import logging
 from datetime import time as dt_time
 
+# Force UTF-8 encoding on standard output for Windows console compatibility
+if hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
 try:
     import yfinance as yf
     YFINANCE_AVAILABLE = True
@@ -646,8 +653,14 @@ def _now_ist():
 
 
 def _market_is_open_ist():
+    """Return True only if IST time is within market hours on an actual NSE trading day."""
     now = _now_ist()
+    # Block weekends (Saturday=5, Sunday=6)
     if now.weekday() >= 5:
+        return False
+    # Block NSE holidays
+    NSE_HOLIDAYS = getattr(scanner_module, 'NSE_HOLIDAYS', set())
+    if now.strftime("%Y-%m-%d") in NSE_HOLIDAYS:
         return False
     t = now.time()
     return dt_time(9, 15) <= t <= dt_time(15, 30)
@@ -842,8 +855,13 @@ def calculate_signal_score_components(tier, volume_ratio, perfect_base, post_con
         "total_score": round(total_score, 2)
     }
 
-def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None):
+def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None, bulk_prices=None):
     """Check if symbol has broken listing day high with volume"""
+    # Early RE/SME skip
+    if pd.isna(symbol) or '-RE' in str(symbol) or str(symbol).endswith('-SM') or 'RE1' in str(symbol):
+        logger.info(f"⏭️ Skipping RE/SME symbol early: {symbol}")
+        return None
+        
     try:
         listing_day_high = listing_info['listing_day_high']
         listing_day_low = listing_info['listing_day_low']
@@ -937,31 +955,50 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None):
         price_is_live = False
         current_high = 0.0
 
-        try:
-            live_price, live_source, day_high = get_live_price(symbol)
-            if live_price is not None and live_price > 0:
-                current_price = live_price
-                current_high = day_high if day_high else live_price
-                price_source = f"Live ({live_source})"
-                price_is_live = True
-                
-                # Check price floor first
-                if current_price < scanner_module.MIN_ENTRY_PRICE_RS:
-                    logger.info(f"⏭️ Skipping {symbol} - Price ₹{current_price:.2f} is below ₹{scanner_module.MIN_ENTRY_PRICE_RS:.2f} floor")
-                    return None
-                
-                # Fast price gate: if live high is too far below listing high, reject early and avoid downloading history
-                dist_below_high_pct = (listing_day_high - current_high) / listing_day_high * 100.0 if listing_day_high > 0 else 0.0
-                max_allowed_dist = LISTING_TIER_B_MAX_DISTANCE_FROM_HIGH_PCT if LISTING_TIER_B_ENABLED else 5.0
-                
-                if dist_below_high_pct > max_allowed_dist:
-                    logger.info(f"⏭️ Skipping {symbol}: Early price gate: {dist_below_high_pct:.1f}% below listing high (max {max_allowed_dist}%)")
-                    return None
-        except Exception as e:
-            logger.debug(f"Could not get live price early for {symbol}: {e}")
+        if bulk_prices and symbol in bulk_prices:
+            current_price, current_high = bulk_prices[symbol]
+            price_source = "Live (Upstox-Bulk)"
+            price_is_live = True
+            
+            # Check price floor first
+            if current_price < scanner_module.MIN_ENTRY_PRICE_RS:
+                logger.info(f"⏭️ Skipping {symbol} - Price ₹{current_price:.2f} is below ₹{scanner_module.MIN_ENTRY_PRICE_RS:.2f} floor")
+                return None
+            
+            # Fast price gate
+            dist_below_high_pct = (listing_day_high - current_high) / listing_day_high * 100.0 if listing_day_high > 0 else 0.0
+            max_allowed_dist = LISTING_TIER_B_MAX_DISTANCE_FROM_HIGH_PCT if LISTING_TIER_B_ENABLED else 5.0
+            
+            if dist_below_high_pct > max_allowed_dist:
+                logger.info(f"⏭️ Skipping {symbol}: Early price gate: {dist_below_high_pct:.1f}% below listing high (max {max_allowed_dist}%)")
+                return None
+        else:
+            try:
+                live_price, live_source, day_high, _vol = get_live_price(symbol)
+                if live_price is not None and live_price > 0:
+                    current_price = live_price
+                    current_high = day_high if day_high else live_price
+                    price_source = f"Live ({live_source})"
+                    price_is_live = True
+                    
+                    # Check price floor first
+                    if current_price < scanner_module.MIN_ENTRY_PRICE_RS:
+                        logger.info(f"⏭️ Skipping {symbol} - Price ₹{current_price:.2f} is below ₹{scanner_module.MIN_ENTRY_PRICE_RS:.2f} floor")
+                        return None
+                    
+                    # Fast price gate: if live high is too far below listing high, reject early and avoid downloading history
+                    dist_below_high_pct = (listing_day_high - current_high) / listing_day_high * 100.0 if listing_day_high > 0 else 0.0
+                    max_allowed_dist = LISTING_TIER_B_MAX_DISTANCE_FROM_HIGH_PCT if LISTING_TIER_B_ENABLED else 5.0
+                    
+                    if dist_below_high_pct > max_allowed_dist:
+                        logger.info(f"⏭️ Skipping {symbol}: Early price gate: {dist_below_high_pct:.1f}% below listing high (max {max_allowed_dist}%)")
+                        return None
+            except Exception as e:
+                logger.debug(f"Could not get live price early for {symbol}: {e}")
 
         # Fetch current historical data (only if early price gate passes or live price check failed)
-        df = fetch_data(symbol, listing_date)
+        live_today = bulk_prices[symbol] if (bulk_prices and symbol in bulk_prices) else None
+        df = fetch_data(symbol, listing_date, live_today_data=live_today)
         
         if df is None or df.empty:
             return None
@@ -986,16 +1023,22 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None):
         
         # If live price was not retrieved early, try again here or log what we found
         if not price_is_live:
-            try:
-                live_price, live_source, day_high = get_live_price(symbol)
-                if live_price is not None and live_price > 0:
-                    current_price = live_price
-                    current_high = day_high if day_high else live_price
-                    price_source = f"Live ({live_source})"
-                    price_is_live = True
-                    logger.info(f"✅ Using live price for {symbol} breakout detection: ₹{current_price:.2f} (High: ₹{current_high:.2f}) from {live_source}")
-            except Exception as e:
-                logger.debug(f"Could not get live price for {symbol}: {e}")
+            if bulk_prices and symbol in bulk_prices:
+                current_price, current_high = bulk_prices[symbol]
+                price_source = "Live (Upstox-Bulk)"
+                price_is_live = True
+                logger.info(f"✅ Using live price for {symbol} breakout detection: ₹{current_price:.2f} (High: ₹{current_high:.2f}) from Upstox-Bulk")
+            else:
+                try:
+                    live_price, live_source, day_high, _vol = get_live_price(symbol)
+                    if live_price is not None and live_price > 0:
+                        current_price = live_price
+                        current_high = day_high if day_high else live_price
+                        price_source = f"Live ({live_source})"
+                        price_is_live = True
+                        logger.info(f"✅ Using live price for {symbol} breakout detection: ₹{current_price:.2f} (High: ₹{current_high:.2f}) from {live_source}")
+                except Exception as e:
+                    logger.debug(f"Could not get live price for {symbol}: {e}")
         else:
             logger.info(f"✅ Using live price for {symbol} breakout detection: ₹{current_price:.2f} (High: ₹{current_high:.2f}) from {price_source}")
         
@@ -1915,6 +1958,16 @@ def scan_listing_day_breakouts():
     
     logger.info(f"📋 Monitoring {len(active_listings)} active listings...")
     
+    # Pre-fetch live prices in bulk from Upstox to minimize sequential API calls
+    active_symbols = active_listings['symbol'].tolist()
+    bulk_prices = {}
+    try:
+        bulk_prices = getattr(scanner_module, 'get_bulk_live_prices_upstox', lambda x: {})(active_symbols)
+        if bulk_prices:
+            logger.info(f"⚡ Pre-fetched live prices in bulk for {len(bulk_prices)}/{len(active_symbols)} active listings")
+    except Exception as bulk_err:
+        logger.warning(f"Failed to pre-fetch bulk live prices: {bulk_err}")
+        
     breakouts_found = 0
     pending_breakouts = load_pending_breakouts()
     
@@ -1922,9 +1975,13 @@ def scan_listing_day_breakouts():
         symbol = listing_info['symbol']
         logger.info(f"\n🔍 Checking {symbol}...")
         
+        # Reset network call flag for this symbol iteration
+        if hasattr(scanner_module, 'network_call_made'):
+            scanner_module.network_call_made = False
+        
         try:
             # Check for breakout
-            breakout = check_listing_day_breakout(symbol, listing_info, pending_breakouts)
+            breakout = check_listing_day_breakout(symbol, listing_info, pending_breakouts, bulk_prices)
             
             if breakout:
                 signal_type = breakout.get('type', 'BREAKOUT')
@@ -1983,8 +2040,9 @@ def scan_listing_day_breakouts():
                 # Breakout was checked but not confirmed - rejection reason already logged in check_listing_day_breakout
                 pass
             
-            # Rate limiting
-            time.sleep(0.3)
+            # Rate limiting - only sleep if a network call was actually executed
+            if getattr(scanner_module, 'network_call_made', False):
+                time.sleep(0.3)
         
         except Exception as e:
             logger.error(f"Error scanning {symbol}: {e}")

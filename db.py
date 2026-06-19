@@ -23,6 +23,7 @@ ipos_col = db["ipos"] if db is not None else None
 listing_data_col = db["listing_data"] if db is not None else None
 watchlist_col = db["watchlist"] if db is not None else None
 system_audits_col = db["system_audits"] if db is not None else None
+daily_candles_col = db["daily_candles_cache"] if db is not None else None
 
 # In-process cache — avoids a DB round-trip on every data fetch
 _instrument_key_cache: dict = {}
@@ -100,6 +101,8 @@ def ensure_indexes():
     watchlist_col.create_index("symbol", unique=True)
     system_audits_col.create_index("audit_id", unique=True)
     system_audits_col.create_index("timestamp")
+    if daily_candles_col is not None:
+        daily_candles_col.create_index("symbol", unique=True)
 
 def insert_log(scanner: str, symbol: str, action: str, candle_timestamp, details: dict, version: str = SCANNER_VERSION, source: str = "live", log_type: str = "ACCEPTED"):
     global _rejection_guard_warned
@@ -639,3 +642,52 @@ def save_audit_to_db(
     except Exception as e:
         logger.error(f"[DB] save_audit_to_db failed for {audit_id}: {e}")
         return False
+
+
+def get_cached_candles(symbol: str) -> dict:
+    """Fetch cached daily candles for a symbol from MongoDB."""
+    if daily_candles_col is None or not symbol:
+        return None
+    try:
+        return daily_candles_col.find_one({"symbol": symbol}, {"_id": 0})
+    except Exception as e:
+        logger.error(f"[DB] get_cached_candles failed for {symbol}: {e}")
+        return None
+
+
+def upsert_cached_candles(symbol: str, last_completed_date: str, candles: list):
+    """Upsert cached daily candles for a symbol into MongoDB daily_candles_cache collection."""
+    if daily_candles_col is None or not symbol:
+        return
+    
+    doc = {
+        "symbol": symbol,
+        "last_completed_date": last_completed_date,
+        "candles": candles,
+        "updated_at": datetime.now(timezone.utc)
+    }
+    
+    try:
+        daily_candles_col.update_one(
+            {"symbol": symbol},
+            {"$set": doc, "$setOnInsert": {"created_at": datetime.now(timezone.utc)}},
+            upsert=True
+        )
+    except Exception as e:
+        logger.error(f"[DB] upsert_cached_candles failed for {symbol}: {e}")
+
+
+def update_cached_market_cap(symbol: str, market_cap_cr: float):
+    """Update only the market_cap_cr field of a symbol's cache document."""
+    if daily_candles_col is None or not symbol:
+        return
+    try:
+        daily_candles_col.update_one(
+            {"symbol": symbol},
+            {"$set": {"market_cap_cr": market_cap_cr, "updated_at": datetime.now(timezone.utc)}},
+            upsert=False
+        )
+    except Exception as e:
+        logger.error(f"[DB] update_cached_market_cap failed for {symbol}: {e}")
+
+
