@@ -716,6 +716,102 @@ def _leader_score(entry_above_high_pct, volume_spike, risk_reward, current_price
         score -= 1
     return score
 
+def evaluate_bse_liquidity_and_base(symbol, bse_symbol, listing_date):
+    """
+    Fetches BSE data and performs standard daily volume and daily turnover checks.
+    Returns: (passed, reason, is_perfect_base)
+    """
+    try:
+        if isinstance(listing_date, str):
+            listing_date = pd.to_datetime(listing_date).date()
+        elif hasattr(listing_date, 'date'):
+            listing_date = listing_date.date()
+        elif isinstance(listing_date, pd.Timestamp):
+            listing_date = listing_date.date()
+
+        ticker = yf.Ticker(bse_symbol)
+        start_fetch = (listing_date - timedelta(days=60)).strftime("%Y-%m-%d")
+        end_fetch = listing_date.strftime("%Y-%m-%d")
+        hist = ticker.history(start=start_fetch, end=end_fetch)
+        if hist.empty:
+            return False, "No historical BSE data found", False
+            
+        hist.index = hist.index.tz_localize(None)
+        
+        # 1. 30-day prior BSE Liquidity (calendar days)
+        limit_30d_start = datetime.combine(listing_date - timedelta(days=30), datetime.min.time())
+        df_30d = hist[hist.index >= limit_30d_start]
+        if df_30d.empty:
+            return False, "No BSE data in prior 30-day window", False
+            
+        avg_vol_30d = df_30d["Volume"].mean()
+        df_30d_turnover = df_30d["Close"] * df_30d["Volume"]
+        avg_turnover = df_30d_turnover.mean()
+        
+        # First-principles thresholds (10k volume AND Rs. 37.5 Lakhs turnover)
+        min_bse_volume = 10000
+        min_bse_turnover = 3750000  # Rs. 37.5 Lakhs
+        
+        if avg_vol_30d < min_bse_volume:
+            return False, f"BSE Avg Volume {avg_vol_30d:,.0f} < {min_bse_volume} shares floor", False
+        if avg_turnover < min_bse_turnover:
+            return False, f"BSE Avg Turnover Rs. {avg_turnover:,.2f} < Rs. {min_bse_turnover:,.2f} floor", False
+            
+        # 2. Reconstruct DataFrame for base quality evaluation
+        df_bse = hist.tail(10).copy()
+        df_bse = df_bse.reset_index()
+        df_bse.rename(columns={
+            "Date": "DATE",
+            "Open": "OPEN",
+            "High": "HIGH",
+            "Low": "LOW",
+            "Close": "CLOSE",
+            "Volume": "VOLUME"
+        }, inplace=True)
+        df_bse["DATE"] = pd.to_datetime(df_bse["DATE"])
+        
+        bse_listing_high = float(hist.iloc[0]["High"])
+        bse_current_high = float(hist.iloc[-1]["High"])
+        
+        base_ok, base_reason, base_metrics = _evaluate_watchlist_perfect_base(
+            df_bse,
+            LISTING_WATCHLIST_BASE_LOOKBACK,
+            bse_listing_high,
+            bse_current_high,
+            proximity_check=False
+        )
+        
+        return True, "PASSED", base_ok
+    except Exception as e:
+        return False, f"Error validating BSE data: {str(e)}", False
+
+def check_is_nse_addition(symbol, listing_date):
+    """
+    Check if the symbol is a BSE-to-NSE addition.
+    Returns: (is_nse_addition, bse_symbol)
+    """
+    bse_symbol = f"{symbol}.BO"
+    try:
+        # Query BSE ticker max history
+        ticker = yf.Ticker(bse_symbol)
+        hist = ticker.history(period="max")
+        if not hist.empty:
+            bse_start = hist.index[0].date()
+            if isinstance(listing_date, str):
+                listing_date_obj = pd.to_datetime(listing_date).date()
+            elif hasattr(listing_date, 'date'):
+                listing_date_obj = listing_date.date()
+            else:
+                listing_date_obj = listing_date
+            
+            # If BSE history starts more than 2 years (730 days) before NSE listing date
+            if (listing_date_obj - bse_start).days > 730:
+                logger.info(f"ℹ️ {symbol} identified as BSE-to-NSE addition (BSE start: {bse_start}, NSE start: {listing_date_obj})")
+                return True, bse_symbol
+    except Exception as e:
+        logger.debug(f"Failed to check BSE history for {symbol}: {e}")
+    return False, None
+
 def get_listing_day_data(symbol, listing_date):
     """Fetch and extract listing day high/low from historical data"""
     try:
@@ -762,6 +858,20 @@ def get_listing_day_data(symbol, listing_date):
         logger.info(f"   Close: ₹{listing_day_close:.2f}")
         logger.info(f"   Volume: {listing_day_volume:,.0f}")
         
+        # Check if NSE addition
+        is_addition, bse_sym = check_is_nse_addition(symbol, actual_listing_date)
+        
+        bse_liquidity_passed = True
+        bse_perfect_base = False
+        bse_rejection_reason = None
+        
+        if is_addition and bse_sym:
+            passed_liq, liq_reason, bse_pb = evaluate_bse_liquidity_and_base(symbol, bse_sym, actual_listing_date)
+            bse_liquidity_passed = passed_liq
+            bse_perfect_base = bse_pb
+            if not passed_liq:
+                bse_rejection_reason = liq_reason
+        
         return {
             'symbol': symbol,
             'listing_date': actual_listing_date,
@@ -770,7 +880,12 @@ def get_listing_day_data(symbol, listing_date):
             'listing_day_close': listing_day_close,
             'listing_day_volume': listing_day_volume,
             'last_updated': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'status': 'ACTIVE'
+            'status': 'ACTIVE',
+            'is_nse_addition': is_addition,
+            'bse_symbol': bse_sym,
+            'bse_liquidity_passed': bse_liquidity_passed,
+            'bse_perfect_base': bse_perfect_base,
+            'bse_rejection_reason': bse_rejection_reason
         }
     
     except Exception as e:
@@ -881,6 +996,28 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None, bul
         today_date = datetime.today().date()
         days_since_listing = (today_date - listing_date).days
 
+        # BSE Liquidity and Base Quality Check for NSE Additions
+        is_nse_addition = listing_info.get('is_nse_addition', False)
+        bse_symbol = listing_info.get('bse_symbol')
+        bse_liquidity_passed = listing_info.get('bse_liquidity_passed', True)
+        bse_perfect_base = listing_info.get('bse_perfect_base', False)
+        bse_rejection_reason = listing_info.get('bse_rejection_reason')
+        
+        if is_nse_addition and days_since_listing > 0:
+            if days_since_listing > 30:
+                logger.info(f"⏭️ Skipping {symbol} (NSE Addition) — days since listing {days_since_listing}d > 30d limit")
+                return None
+            if not bse_liquidity_passed:
+                logger.info(f"⏭️ Skipping {symbol} (NSE Addition) — {bse_rejection_reason}")
+                write_daily_log("listing_day", symbol, "REJECTED_BREAKOUT", {
+                    "reason": "LIQUIDITY_TRAP_BSE",
+                    "bse_symbol": bse_symbol,
+                    "details": bse_rejection_reason,
+                    "days_since_listing": days_since_listing
+                }, log_type="REJECTED")
+                return None
+            logger.info(f"ℹ️ {symbol} (NSE Addition) passed BSE liquidity checks. BSE Perfect Base: {bse_perfect_base}")
+
         # Listing Volume Floor check
         # Day-0 (days_since_listing == 0) is intentionally exempt: listing-day
         # volume may not be fully settled in the DB yet, so we don't reject on Day 0.
@@ -890,7 +1027,7 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None, bul
                 f"— recorded listing_day_volume={listing_day_volume:,.0f}. "
                 f"Floor will apply from Day 1 onwards."
             )
-        elif listing_day_volume < 150000:
+        elif listing_day_volume < 150000 and not is_nse_addition:
             logger.info(
                 f"⏭️ Skipping {symbol} — listing_day_volume={listing_day_volume:,.0f} < 150k floor "
                 f"(days_since_listing={days_since_listing})"
@@ -1114,7 +1251,7 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None, bul
         volume_warnings = []  # Track volume-related warnings
         
         if current_high > listing_day_high:
-            if len(df) < 3:
+            if len(df) < 3 and not is_nse_addition:
                 logger.info(f"⏭️ Rejecting standard breakout for {symbol} because base history length {len(df)} < 3 trading days")
                 _log_listing_rejection("BASE_DURATION_BELOW_MINIMUM", len(df), 3, {"history_len": len(df)})
                 return None
@@ -1403,17 +1540,22 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None, bul
 
             # --- Detect perfect base for BREAKOUT signals (used for A+ tier eligibility) ---
             if signal_type == 'BREAKOUT':
-                _pb_ok, _, _pb_metrics = _evaluate_watchlist_perfect_base(
-                    df,
-                    LISTING_WATCHLIST_BASE_LOOKBACK,
-                    float(listing_day_high),
-                    float(current_high),
-                    proximity_check=False,  # price is above listing high — proximity irrelevant
-                )
-                perfect_base_ok = _pb_ok
-                if _pb_ok:
-                    logger.info(f"✅ {symbol}: BREAKOUT has tight base — A+ tier eligible")
-                    write_daily_log("listing_day", symbol, "PERFECT_BASE_DETECTED", _pb_metrics)
+                if is_nse_addition:
+                    perfect_base_ok = bse_perfect_base
+                    if bse_perfect_base:
+                        logger.info(f"✅ {symbol} (NSE Addition): BREAKOUT has tight pre-listing BSE base — A+ tier eligible")
+                else:
+                    _pb_ok, _, _pb_metrics = _evaluate_watchlist_perfect_base(
+                        df,
+                        LISTING_WATCHLIST_BASE_LOOKBACK,
+                        float(listing_day_high),
+                        float(current_high),
+                        proximity_check=False,  # price is above listing high — proximity irrelevant
+                    )
+                    perfect_base_ok = _pb_ok
+                    if _pb_ok:
+                        logger.info(f"✅ {symbol}: BREAKOUT has tight base — A+ tier eligible")
+                        write_daily_log("listing_day", symbol, "PERFECT_BASE_DETECTED", _pb_metrics)
 
             # Intraday confirmation engine: PENDING -> CONFIRMED -> ENTER
             if signal_type == 'BREAKOUT' and LISTING_CONFIRMATION_MINUTES > 0 and _market_is_open_ist():
