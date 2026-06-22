@@ -71,6 +71,10 @@ const SCHEDULE = {
   "09:45": ["listing-day-breakout.yml", "watchlist-hourly-scanner.yml"],
   // ── 4:15 PM IST — post-close final scan ──────────────────────────────────
   "10:45": ["listing-day-breakout.yml", "watchlist-hourly-scanner.yml"],
+  // ── 6:30 PM IST — post-close stop loss update scan ────────────────────────
+  "13:00": [
+    { workflow: "ipo-scanner-v2.yml", inputs: { mode: "stop_loss_update" } },
+  ],
 };
 
 // ─── Workflow dispatch inputs ──────────────────────────────────────────────────
@@ -84,9 +88,9 @@ const WORKFLOW_INPUTS = {
 
 // ─── Core dispatch function ────────────────────────────────────────────────────
 
-async function dispatchWorkflow(workflow, pat) {
+async function dispatchWorkflow(workflow, customInputs, pat) {
   const url     = GITHUB_DISPATCH_URL(workflow);
-  const inputs  = WORKFLOW_INPUTS[workflow] ?? {};
+  const inputs  = customInputs ?? WORKFLOW_INPUTS[workflow] ?? {};
   const body    = JSON.stringify({ ref: GITHUB_REF, inputs });
 
   const response = await fetch(url, {
@@ -155,7 +159,13 @@ export default {
 
     // Dispatch all workflows for this time slot in parallel
     const results = await Promise.allSettled(
-      workflows.map((wf) => dispatchWorkflow(wf, pat))
+      workflows.map((wf) => {
+        if (typeof wf === "string") {
+          return dispatchWorkflow(wf, null, pat);
+        } else {
+          return dispatchWorkflow(wf.workflow, wf.inputs, pat);
+        }
+      })
     );
 
     // Log outcomes
@@ -198,7 +208,34 @@ export default {
       }
 
       console.log(`[Dispatcher] Manual HTTP trigger received for: ${workflow}`);
-      const result = await dispatchWorkflow(workflow, pat);
+      
+      // Parse custom inputs from query params or JSON inputs string
+      const inputsParam = url.searchParams.get("inputs");
+      let customInputs = null;
+      if (inputsParam) {
+        try {
+          customInputs = JSON.parse(inputsParam);
+        } catch (e) {
+          // ignore parsing error
+        }
+      }
+      if (!customInputs) {
+        customInputs = {};
+        for (const [key, val] of url.searchParams.entries()) {
+          if (key !== "workflow" && key !== "inputs") {
+            // Convert 'true' / 'false' strings to actual booleans if needed
+            let parsedVal = val;
+            if (val === "true") parsedVal = true;
+            else if (val === "false") parsedVal = false;
+            customInputs[key] = parsedVal;
+          }
+        }
+        if (Object.keys(customInputs).length === 0) {
+          customInputs = null;
+        }
+      }
+
+      const result = await dispatchWorkflow(workflow, customInputs, pat);
 
       if (result.success) {
         return new Response(

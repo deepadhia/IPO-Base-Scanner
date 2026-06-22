@@ -3,13 +3,13 @@ main = "src/index.js"
 compatibility_date = "2024-01-01"
 
 # ── Cron trigger ──────────────────────────────────────────────────────────────
-# Fires every 15 minutes from 03:00 to 10:59 UTC, Monday–Friday.
+# Fires every 15 minutes from 03:00 to 13:59 UTC, Monday–Saturday.
 # The Worker itself checks exact minute (:15 or :45) and dispatches accordingly.
 # :00 and :30 ticks are intentional no-ops — they take <1ms and cost nothing.
 #
-# Free tier: 100,000 requests/day — this uses at most 32/day (4 ticks/hr × 8hrs).
+# Free tier: 100,000 requests/day — this uses at most 44/day (4 ticks/hr × 11hrs).
 [triggers]
-crons = ["*/15 3-10 * * 1-6"]
+crons = ["*/15 3-13 * * 1-6"]
 
 # ── Secrets (DO NOT put real values here — set via CLI or dashboard) ──────────
 # Run:  npx wrangler secret put GITHUB_PAT
