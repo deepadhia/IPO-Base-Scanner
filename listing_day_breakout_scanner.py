@@ -247,6 +247,9 @@ LISTING_TIER_B_POSITION_SIZE_PCT          = _env_int("LISTING_TIER_B_POSITION_SI
 
 # Post-confirm move: minimum % above breakout reference after confirmation (kills dead trades)
 LISTING_MIN_POST_CONFIRM_MOVE_PCT = _env_float("LISTING_MIN_POST_CONFIRM_MOVE_PCT", 1.5)
+# Minimum profit target as a fraction of entry price (ensures tight listing ranges don't choke R:R filter)
+# 0.20 = target must be at least 20% above entry. Used in both BREAKOUT and BASE_BREAKOUT paths.
+LISTING_MIN_TARGET_RETURN_PCT = _env_float("LISTING_MIN_TARGET_RETURN_PCT", 0.20)
 
 
 def _evaluate_watchlist_perfect_base(
@@ -1233,15 +1236,22 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None, bul
         
         # Calculate average volume baseline from prior completed bars only.
         # Always exclude the latest (last) bar: during live market hours it is a
-        # partial intraday candle, so including it would deflate the average and
-        # make volume_spike appear easier to satisfy than it actually is.
-        if len(df) > 2:
-            avg_volume = float(df.iloc[:-1]['VOLUME'].tail(10).mean())
-        elif len(df) == 2:
-            # Only the listing day bar is available as baseline
-            avg_volume = float(df.iloc[0]['VOLUME'])
+        # partial intraday candle.
+        # To avoid volume baseline inflation by listing day (index 0) and day 1 (index 1),
+        # calculate the average from Day 2 onwards (index 2 onwards in completed bars).
+        completed_bars = df.iloc[:-1]
+        if len(completed_bars) > 2:
+            # We have at least 3 completed bars (indices 0, 1, 2). Exclude index 0 and 1.
+            # Slice from index 2 onwards, taking up to last 10 days
+            avg_volume = float(completed_bars['VOLUME'].iloc[2:].tail(10).mean())
+        elif len(completed_bars) == 2:
+            # Only index 0 (Day 0) and index 1 (Day 1) are completed. Use index 1 (Day 1) as baseline.
+            avg_volume = float(completed_bars['VOLUME'].iloc[1])
+        elif len(completed_bars) == 1:
+            # Only index 0 (Day 0) is completed. Use it as baseline.
+            avg_volume = float(completed_bars['VOLUME'].iloc[0])
         else:
-            # Single bar (listing day itself) — no prior baseline
+            # No prior completed bars (Day 0 itself)
             avg_volume = current_volume
         
         # Check for breakout
@@ -1498,7 +1508,9 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None, bul
             else:
                 target_multiplier = 0.5
             
-            target_price = entry_price + (listing_range * target_multiplier)
+            # Enforce a minimum target return floor above entry price (default 20%)
+            # Prevents tight listing-day ranges from producing targets that immediately fail the R:R filter.
+            target_price = entry_price + max(listing_range * target_multiplier, entry_price * LISTING_MIN_TARGET_RETURN_PCT)
             
             # Risk/Reward
             risk = entry_price - stop_loss
@@ -1509,6 +1521,18 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None, bul
             if risk_reward < MIN_RISK_REWARD:
                 rejection_reason = f"Risk/Reward ratio ({risk_reward:.2f}) below minimum ({MIN_RISK_REWARD:.1f})"
                 logger.info(f"⏭️ Skipping {symbol}: Risk/Reward ratio ({risk_reward:.2f}) is below minimum ({MIN_RISK_REWARD:.1f})")
+                _log_listing_rejection(
+                    reason="poor_risk_reward",
+                    value=risk_reward,
+                    threshold=MIN_RISK_REWARD,
+                    metrics={
+                        "perf": None,
+                        "prng": round(listing_range_pct, 2) if 'listing_range_pct' in locals() else None,
+                        "vol_ratio": round(vol_vs_avg, 2) if 'vol_vs_avg' in locals() else None,
+                        "rsi": None,
+                        "score": None
+                    }
+                )
                 return None
 
             # Leader score gate (selection quality)
@@ -1640,9 +1664,10 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None, bul
                     (current_high - base_range_high) / base_range_high * 100.0
                     if base_range_high > 0 else 0.0
                 )
-                # Target for BASE_BREAKOUT: the listing high is the natural objective
+                # Target for BASE_BREAKOUT: the listing high is the natural objective,
+                # but enforce the same minimum return floor as the BREAKOUT path.
                 if listing_day_high > entry_price:
-                    target_price = listing_day_high
+                    target_price = max(listing_day_high, entry_price * (1.0 + LISTING_MIN_TARGET_RETURN_PCT))
                     reward = target_price - entry_price
                     risk_reward = reward / risk if risk > 0 else 0
             else:

@@ -9,7 +9,7 @@ The Listing Day Breakout Scanner runs in strict quality mode (`LISTING_STRICT_QU
 | **Max Days Since Listing** | ≤ `LISTING_MAX_DAYS_SINCE_LISTING` (**730 days / 2 years**) |
 | **Listing Volume Floor (v3.3.0)** | Listing-day traded volume ≥ **150,000 shares** (exempt on Day 0) |
 | **Base History Floor (v3.3.0)** | At least **3 trading days** of post-listing data required |
-| **Volume vs 10d Avg** | ≥ `LISTING_MIN_VOLUME_MULT` (**1.8×** to **2.0×** depending on Tier) |
+| **Volume vs 10d Avg (Day 2+ Baseline)** | ≥ `LISTING_MIN_VOLUME_MULT` (**1.8×** to **2.0×** depending on Tier). Baseline calculated from Day 2 onwards — listing day (Day 0) and Day 1 are excluded to avoid spike inflation. |
 | **Volume vs Listing Day** | ≥ `LISTING_MIN_VOL_VS_LISTING` (**1.0×**) when listing volume > 0 |
 | **Volume (Listing Vol Missing)**| Today's volume ≥ `LISTING_MIN_VOL_MULT_WHEN_NO_LISTING_VOL` (**2.0×** avg) |
 | **Entry Above Listing High** | ≤ `LISTING_MAX_ENTRY_ABOVE_HIGH_PCT` (**3.5%**) |
@@ -46,7 +46,8 @@ The Listing Day Breakout Scanner runs in strict quality mode (`LISTING_STRICT_QU
   * Entry ≤2% above listing high → 100% of listing day range.
   * Entry 2-5% above listing high → 75% of listing day range.
   * Entry >5% above listing high → 50% of listing day range.
-* A minimum risk/reward ratio of **1:1.25** is enforced. Setups where the potential range expansion target does not justify the stop loss size are rejected.
+* A **minimum profit target floor** of **20%** above entry price is enforced (`LISTING_MIN_TARGET_RETURN_PCT=0.20`). When the listing day range is very narrow (tight consolidation), the floor activates to prevent the calculated target from being too close to entry and failing the R:R filter. The floor is tunable via env var.
+* A minimum risk/reward ratio of **1:1.25** is enforced (`LISTING_MIN_RISK_REWARD`). Setups where the potential range expansion target does not justify the stop loss size are rejected.
 
 ### 5. Limit Buy Order Instruction (v3.3.0)
 * Every Telegram alert now includes a **Limit Buy Price** calculated as:
