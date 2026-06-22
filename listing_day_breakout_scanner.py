@@ -119,9 +119,13 @@ MIN_RISK_REWARD = _env_float(
     "LISTING_MIN_RISK_REWARD", 1.25 if LISTING_STRICT_QUALITY else 1.0
 )
 STOP_LOSS_PCT = _env_float("LISTING_STOP_LOSS_PCT", 8.0)
+# DEPRECATED — no longer used as a hard rejection gate.
+# Listing day volume is a once-in-IPO-lifecycle event; using it as a repeatable threshold
+# rejects valid breakout setups (e.g. stocks with massive listing day volume).
+# Volume confirmation is now handled exclusively by the Day 2+ avg baseline (MIN_VOLUME_MULTIPLIER).
 MIN_VOLUME_VS_LISTING_DAY = _env_float(
     "LISTING_MIN_VOL_VS_LISTING", 1.0 if LISTING_STRICT_QUALITY else 1.2
-)
+)  # kept for backward compat — not used in filtering logic
 # Reject listing-high breakouts when IPO is too old (strategy is "listing day" edge)
 MAX_DAYS_SINCE_LISTING_FOR_BREAKOUT = _env_int(
     "LISTING_MAX_DAYS_SINCE_LISTING", 730
@@ -1439,11 +1443,11 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None, bul
                     f"(base {base_range_high:.2f} → {current_high:.2f}, listing high {listing_day_high:.2f})"
                 )
 
+            # Volume vs listing day comparison removed.
+            # Listing day volume is a once-in-IPO-lifecycle event and cannot be used as a
+            # repeatable threshold. Volume confirmation is handled exclusively by the
+            # Day 2+ avg baseline check (vol_vs_avg >= MIN_VOLUME_MULTIPLIER above).
             volume_vs_listing_day = current_volume / listing_day_volume if listing_day_volume > 0 else 0
-            if volume_vs_listing_day < MIN_VOLUME_VS_LISTING_DAY:
-                volume_warnings.append(f"Low volume vs listing day: {volume_vs_listing_day:.1f}x (need {MIN_VOLUME_VS_LISTING_DAY:.1f}x)")
-                if signal_type == 'BREAKOUT' and not LISTING_STRICT_QUALITY:
-                    logger.warning(f"⚠️ {symbol}: Low volume vs listing day ({volume_vs_listing_day:.1f}x, need {MIN_VOLUME_VS_LISTING_DAY:.1f}x) - sending signal with caution")
 
             # --- Strict quality gate (default): only persist / alert full-quality breakouts ---
             if LISTING_STRICT_QUALITY and signal_type == 'BREAKOUT':
@@ -1459,20 +1463,14 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None, bul
                     )
                     logger.info(f"⏭️ Skipping {symbol}: {rejection_reason}")
                     return None
-                if listing_day_volume > 0:
-                    if volume_vs_listing_day < MIN_VOLUME_VS_LISTING_DAY:
-                        rejection_reason = (
-                            f"Strict: volume vs listing day {volume_vs_listing_day:.2f}x < {MIN_VOLUME_VS_LISTING_DAY}x"
-                        )
-                        logger.info(f"⏭️ Skipping {symbol}: {rejection_reason}")
-                        _log_listing_rejection("low_volume_vs_listing", volume_vs_listing_day, MIN_VOLUME_VS_LISTING_DAY, {"vol_ratio": volume_vs_listing_day})
-                        return None
-                else:
+                # Fallback: if listing day volume is missing/0, require a higher avg multiplier
+                # as a safety net (prevents low-liquidity edge cases).
+                if listing_day_volume == 0:
                     if current_volume < avg_volume * MIN_VOL_MULT_WHEN_NO_LISTING_VOL:
                         rejection_reason = (
                             f"Strict: listing day volume missing/0 — need current vol ≥ {MIN_VOL_MULT_WHEN_NO_LISTING_VOL}x avg ({avg_volume:,.0f})"
                         )
-                        logger.info(f"⏭️ Skipping {symbol}: {rejection_reason}")
+                        logger.info(f"Skipping {symbol}: {rejection_reason}")
                         return None
                 # Passed strict checks — treat as high-quality (no LOW_VOL grade)
                 volume_warnings = []

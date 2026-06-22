@@ -10,8 +10,7 @@ The Listing Day Breakout Scanner runs in strict quality mode (`LISTING_STRICT_QU
 | **Listing Volume Floor (v3.3.0)** | Listing-day traded volume ≥ **150,000 shares** (exempt on Day 0) |
 | **Base History Floor (v3.3.0)** | At least **3 trading days** of post-listing data required |
 | **Volume vs 10d Avg (Day 2+ Baseline)** | ≥ `LISTING_MIN_VOLUME_MULT` (**1.8×** to **2.0×** depending on Tier). Baseline calculated from Day 2 onwards — listing day (Day 0) and Day 1 are excluded to avoid spike inflation. |
-| **Volume vs Listing Day** | ≥ `LISTING_MIN_VOL_VS_LISTING` (**1.0×**) when listing volume > 0 |
-| **Volume (Listing Vol Missing)**| Today's volume ≥ `LISTING_MIN_VOL_MULT_WHEN_NO_LISTING_VOL` (**2.0×** avg) |
+| **Volume (Listing Vol Missing)**| Today's volume ≥ `LISTING_MIN_VOL_MULT_WHEN_NO_LISTING_VOL` (**2.0×** avg) — safety net only when listing day volume was never recorded |
 | **Entry Above Listing High** | ≤ `LISTING_MAX_ENTRY_ABOVE_HIGH_PCT` (**3.5%**) |
 | **Min Risk/Reward Ratio** | ≥ `LISTING_MIN_RISK_REWARD` (**1.25**) |
 | **Leader Score Threshold** | ≥ `LISTING_MIN_LEADER_SCORE` (**5 / 8**) |
