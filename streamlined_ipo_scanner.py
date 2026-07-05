@@ -824,7 +824,7 @@ PT_B = get_env_float("PT_B", 0.12)
 PT_C = get_env_float("PT_C", 0.10)
 
 # Trading parameters
-CONSOL_WINDOWS = get_env_list("CONSOL_WINDOWS", "10,20,30,60,90,120")
+CONSOL_WINDOWS = get_env_list("CONSOL_WINDOWS", "10,20")             # 2026-07-05: narrowed to 10/20d only — 40/80/120d showed negative expectancy in 64-trade analysis
 MAX_PRNG = get_env_float("MAX_PRNG", 25.0)
 VOL_MULT = get_env_float("VOL_MULT", 1.2)
 ABS_VOL_MIN = get_env_int("ABS_VOL_MIN", 3000000)
@@ -862,7 +862,7 @@ MIN_RISK_REWARD = get_env_float("MIN_RISK_REWARD", 1.3)
 MIN_PNL_FOR_TRAIL = get_env_float("MIN_PNL_FOR_TRAIL", 5.0)
 MIN_TRAIL_MOVE_PCT = get_env_float("MIN_TRAIL_MOVE_PCT", 1.0)
 MIN_DAYS_BETWEEN_SIGNALS = get_env_int("MIN_DAYS_BETWEEN_SIGNALS", 10)
-MIN_LIVE_GRADE = os.getenv("MIN_LIVE_GRADE", "C") # Reset to C for Permissive base
+MIN_LIVE_GRADE = os.getenv("MIN_LIVE_GRADE", "B") # 2026-07-05: raised from C → B; Grade C avg -2.64%, median -5.55% across 64-trade history
 
 # --- Capital Allocation, Velocity Gates, and Sizing Configurations (Phase 2.6) ---
 MAX_ACTIVE_POSITIONS = get_env_int("MAX_ACTIVE_POSITIONS", 5)

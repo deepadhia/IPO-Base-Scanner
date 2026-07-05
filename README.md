@@ -388,10 +388,10 @@ TELEGRAM_BOT_TOKEN=your_bot_token
 TELEGRAM_CHAT_ID=your_chat_id
 
 # Tunable parameters (see .env.template for all options)
-MIN_LIVE_GRADE=C         # Minimum grade for signal emission (D/C/B/A/A+)
+MIN_LIVE_GRADE=B         # Minimum grade for signal emission (D/C/B/A/A+) — raised from C on 2026-07-05
 MIN_RISK_REWARD=1.3      # Minimum R:R ratio
 MIN_DAYS_BETWEEN_SIGNALS=10   # Cooldown window per symbol
-CONSOL_WINDOWS=5,10,20,40,80,120
+CONSOL_WINDOWS=10,20          # Narrowed from 5,10,20,40,80,120 on 2026-07-05 (40+ had negative expectancy)
 
 # v3.3.0 entry quality floors
 DEAD_MONEY_DAYS_IPO=20        # Patience stop for listing-day breakouts

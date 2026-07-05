@@ -177,49 +177,126 @@ else:
     print("  Grade data not available in positions.")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 4: Volume & Consolidation — Winner DNA
+# SECTION 4: Volume & Consolidation — Winner DNA (from signals_v2 enrichment)
+# ─────────────────────────────────────────────────────────────────────────────
+# NOTE: signals_v2 holds the enriched data (from backfill_v2_from_v1.py).
+# The legacy signals collection only has 2.3% field coverage for volume_ratio
+# and consolidation_range_pct. This section reads from signals_v2 using:
+#   outcome.pnl_pct      → win/loss classification
+#   base_quality.base_depth      → equivalent to consolidation_range_pct
+#   breakout_fingerprint.volume_zscore → volume strength at breakout
+#   market_context.nifty_trend_slope   → Nifty tailwind at signal time
 # ─────────────────────────────────────────────────────────────────────────────
 print("\n" + "─"*80)
-print("  SECTION 4: WINNER DNA — Volume & Consolidation Traits (signals)")
+print("  SECTION 4: WINNER DNA — Volume & Consolidation Traits (signals_v2)")
 print("─"*80)
 
-if not df_sig.empty:
-    df_sig["pnl_pct"] = pd.to_numeric(df_sig.get("pnl_pct", 0), errors="coerce").fillna(0)
-    df_sig["volume_ratio"] = pd.to_numeric(df_sig.get("volume_ratio", np.nan), errors="coerce")
-    df_sig["consolidation_range_pct"] = pd.to_numeric(df_sig.get("consolidation_range_pct", np.nan), errors="coerce")
-    df_sig["days_since_ipo"] = pd.to_numeric(df_sig.get("days_since_ipo", np.nan), errors="coerce")
+if not df_v2.empty:
+    # ── Flatten nested enrichment fields ──────────────────────────────────────
+    def safe_get_nested(row, *keys):
+        """Safely extract a value from nested dicts in a DataFrame row."""
+        val = row
+        for k in keys:
+            if isinstance(val, dict):
+                val = val.get(k)
+            else:
+                return np.nan
+        return val if val is not None else np.nan
 
-    # Classify closed signals by outcome
-    def classify(row):
-        s = str(row.get("status", "")).upper()
-        if s in ["CLOSED", "TARGET_HIT", "SUCCESS"]:
-            return "WIN" if row.get("pnl_pct", 0) > 0 else "LOSS"
-        return "ACTIVE"
+    # Outcome: pnl from outcome.pnl_pct
+    df_v2["_pnl"] = df_v2.apply(
+        lambda r: safe_get_nested(r.get("outcome", {}), "pnl_pct"), axis=1
+    )
+    df_v2["_pnl"] = pd.to_numeric(df_v2["_pnl"], errors="coerce")
 
-    df_sig["outcome"] = df_sig.apply(classify, axis=1)
-    concluded_sig = df_sig[df_sig["outcome"].isin(["WIN", "LOSS"])]
+    # Outcome status
+    df_v2["_status"] = df_v2.apply(
+        lambda r: str(safe_get_nested(r.get("outcome", {}), "status") or "").upper(), axis=1
+    )
 
-    if not concluded_sig.empty:
-        for metric in ["volume_ratio", "consolidation_range_pct", "days_since_ipo"]:
-            if metric in concluded_sig.columns and concluded_sig[metric].notna().sum() > 0:
-                w_mean = concluded_sig[concluded_sig["outcome"] == "WIN"][metric].mean()
-                l_mean = concluded_sig[concluded_sig["outcome"] == "LOSS"][metric].mean()
-                print(f"\n  {metric}:")
-                print(f"    Winners avg : {w_mean:.2f}")
-                print(f"    Losers  avg : {l_mean:.2f}")
+    # Base quality: base_depth = consolidation range equivalent
+    df_v2["_base_depth"] = pd.to_numeric(
+        df_v2.apply(lambda r: safe_get_nested(r.get("base_quality", {}), "base_depth"), axis=1),
+        errors="coerce"
+    )
+
+    # Base quality: tightness_index (avg daily range %)
+    df_v2["_tightness"] = pd.to_numeric(
+        df_v2.apply(lambda r: safe_get_nested(r.get("base_quality", {}), "tightness_index"), axis=1),
+        errors="coerce"
+    )
+
+    # Breakout: volume zscore
+    df_v2["_vol_zscore"] = pd.to_numeric(
+        df_v2.apply(lambda r: safe_get_nested(r.get("breakout_fingerprint", {}), "volume_zscore"), axis=1),
+        errors="coerce"
+    )
+
+    # Breakout: body-to-range (conviction candle)
+    df_v2["_body_to_range"] = pd.to_numeric(
+        df_v2.apply(lambda r: safe_get_nested(r.get("breakout_fingerprint", {}), "body_to_range"), axis=1),
+        errors="coerce"
+    )
+
+    # Market context: Nifty slope
+    df_v2["_nifty_slope"] = pd.to_numeric(
+        df_v2.apply(lambda r: safe_get_nested(r.get("market_context", {}), "nifty_trend_slope"), axis=1),
+        errors="coerce"
+    )
+
+    # ── Classify win / loss ───────────────────────────────────────────────────
+    closed_v2 = df_v2[df_v2["_status"].isin(["CLOSED", "TARGET_HIT", "SUCCESS", "STOPPED_OUT"])].copy()
+    # Fall back: also include rows where pnl is set but status is not mapped
+    if closed_v2.empty:
+        closed_v2 = df_v2[df_v2["_pnl"].notna()].copy()
+
+    if not closed_v2.empty:
+        winners_v2 = closed_v2[closed_v2["_pnl"] > 0]
+        losers_v2  = closed_v2[closed_v2["_pnl"] <= 0]
+
+        print(f"\n  Using signals_v2 enrichment — {len(closed_v2)} concluded signals "
+              f"({len(winners_v2)} W / {len(losers_v2)} L)")
+
+        metrics_to_compare = [
+            ("_base_depth",    "Base Depth %",       "consolidation range — lower = tighter base"),
+            ("_tightness",     "Tightness Index",    "avg daily range % — lower = more coiled"),
+            ("_vol_zscore",    "Volume Z-Score",     "breakout volume vs 20d avg — higher = stronger"),
+            ("_body_to_range", "Body-to-Range",      "candle conviction — higher = cleaner breakout candle"),
+            ("_nifty_slope",   "Nifty Trend Slope",  "market tailwind — positive = bullish regime"),
+        ]
+
+        print(f"\n  {'Metric':<22} {'Winners Avg':>13} {'Losers Avg':>12} {'Edge':>14}  Interpretation")
+        print("  " + "─" * 90)
+        for col, label, note in metrics_to_compare:
+            w_vals = winners_v2[col].dropna()
+            l_vals = losers_v2[col].dropna()
+            if len(w_vals) == 0 and len(l_vals) == 0:
+                print(f"  {label:<22}  {'no data':>12}  {'no data':>11}  —")
+                continue
+            w_mean = w_vals.mean() if len(w_vals) > 0 else float("nan")
+            l_mean = l_vals.mean() if len(l_vals) > 0 else float("nan")
+            if not np.isnan(w_mean) and not np.isnan(l_mean):
                 delta = w_mean - l_mean
-                sign = "higher" if delta > 0 else "lower"
-                print(f"    → Winners have {abs(delta):.2f} {sign} {metric}")
+                edge = f"{delta:+.2f}"
+            else:
+                edge = "N/A"
+            print(f"  {label:<22}  {w_mean:>12.3f}  {l_mean:>11.3f}  {edge:>14}  ({note})")
+
+        # ── Nifty regime breakdown ────────────────────────────────────────────
+        print(f"\n  Nifty tailwind split (closed signals_v2):")
+        bullish_w = (winners_v2["_nifty_slope"] > 0).sum()
+        bullish_l = (losers_v2["_nifty_slope"] > 0).sum()
+        total_w   = winners_v2["_nifty_slope"].notna().sum()
+        total_l   = losers_v2["_nifty_slope"].notna().sum()
+        if total_w > 0:
+            print(f"    Winners with bullish slope : {bullish_w}/{total_w} ({bullish_w/total_w*100:.1f}%)")
+        if total_l > 0:
+            print(f"    Losers  with bullish slope : {bullish_l}/{total_l} ({bullish_l/total_l*100:.1f}%)")
     else:
-        # All active — still show distributions across all signals
-        print("\n  All signals are still ACTIVE — showing full-cohort distributions:")
-        for metric in ["volume_ratio", "consolidation_range_pct", "days_since_ipo"]:
-            if metric in df_sig.columns and df_sig[metric].notna().sum() > 0:
-                print(f"\n  {metric}:")
-                print(f"    Mean  : {df_sig[metric].mean():.2f}")
-                print(f"    Median: {df_sig[metric].median():.2f}")
-                print(f"    P25   : {df_sig[metric].quantile(0.25):.2f}")
-                print(f"    P75   : {df_sig[metric].quantile(0.75):.2f}")
+        print("\n  No concluded signals found in signals_v2 — cannot compute winner DNA.")
+        print("  (Run backfill_v2_from_v1.py if signals_v2 is empty or outcomes are missing.)")
+else:
+    print("  signals_v2 is empty — run backfill_v2_from_v1.py first.")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SECTION 5: Market Context in signals_v2

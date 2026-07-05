@@ -3,6 +3,10 @@ import json
 import os
 import argparse
 from datetime import datetime, timedelta
+from pymongo import MongoClient
+from dotenv import load_dotenv
+
+load_dotenv()
 
 def _aggregate_rejections_from_jsonl(day_dir, version_filter=None, include_watchlist=True):
     """Fallback parser: aggregate rejection reasons from daily JSONL logs."""
@@ -46,45 +50,61 @@ def run_analysis(start_date=None, version_filter=None, rejection_days=10, clean_
     print("===========================================")
     print(" IPO Scanner: 30-Day Quantitative Analysis ")
     print("===========================================")
-    
-    positions_file = "ipo_positions.csv"
-    signals_file = "ipo_signals.csv"
-    
-    if not os.path.exists(positions_file):
-        print(" Error: ipo_positions.csv not found")
+
+    # ── Load from MongoDB (v2.5.0+ architecture) ─────────────────────────────
+    mongo_uri = os.getenv("MONGO_URI")
+    if not mongo_uri:
+        print(" Error: MONGO_URI not set in environment")
         return
-        
-    df_pos_all = pd.read_csv(positions_file)
+
+    try:
+        client = MongoClient(mongo_uri, tz_aware=False)
+        db = client["ipo_scanner_v2"]
+        positions_raw = list(db.positions.find({}, {"_id": 0}))
+        signals_raw   = list(db.signals.find({}, {"_id": 0}))
+    except Exception as e:
+        print(f" Error: Could not connect to MongoDB: {e}")
+        return
+
+    if not positions_raw:
+        print(" Error: No positions found in MongoDB (ipo_scanner_v2.positions)")
+        return
+
+    df_pos_all = pd.DataFrame(positions_raw)
     df_pos = df_pos_all.copy()
-    df_sig = None
+    df_sig = pd.DataFrame(signals_raw) if signals_raw else None
 
+    # Normalise date columns
+    if "entry_date" in df_pos.columns:
+        df_pos["entry_date"] = pd.to_datetime(df_pos["entry_date"], errors="coerce")
+    if df_sig is not None and "signal_date" in df_sig.columns:
+        df_sig["signal_date"] = pd.to_datetime(df_sig["signal_date"], errors="coerce")
+
+    # ── Apply filters (same logic as the original CSV version) ────────────────
     if start_date:
-        if 'entry_date' in df_pos.columns:
-            entry_dt = pd.to_datetime(df_pos['entry_date'], errors='coerce')
-            df_pos = df_pos[entry_dt.dt.date >= start_date].copy()
+        if "entry_date" in df_pos.columns:
+            df_pos = df_pos[df_pos["entry_date"].dt.date >= start_date].copy()
         else:
-            print(" Warning: entry_date not found in positions, start-date filter skipped for positions.")
-    if version_filter and 'version' in df_pos.columns:
-        df_pos = df_pos[df_pos['version'].astype(str) == str(version_filter)].copy()
+            print(" Warning: entry_date not found in positions, start-date filter skipped.")
+        if df_sig is not None and "signal_date" in df_sig.columns:
+            df_sig = df_sig[df_sig["signal_date"].dt.date >= start_date].copy()
 
-    if os.path.exists(signals_file):
-        df_sig_all = pd.read_csv(signals_file)
-        df_sig = df_sig_all.copy()
-        if start_date and 'signal_date' in df_sig.columns:
-            signal_dt = pd.to_datetime(df_sig['signal_date'], errors='coerce')
-            df_sig = df_sig[signal_dt.dt.date >= start_date].copy()
-        if version_filter and 'version' in df_sig.columns:
-            df_sig = df_sig[df_sig['version'].astype(str) == str(version_filter)].copy()
-        if clean_cohort:
-            if 'signal_type' in df_sig.columns:
-                df_sig = df_sig[df_sig['signal_type'].fillna('').astype(str) != 'WATCHLIST'].copy()
-            if 'grade' in df_sig.columns:
-                df_sig = df_sig[~df_sig['grade'].fillna('').astype(str).str.contains('LOW_VOL', na=False)].copy()
-            eligible_symbols = set(df_sig['symbol'].dropna().astype(str).tolist()) if 'symbol' in df_sig.columns else set()
-            if eligible_symbols:
-                df_pos = df_pos[df_pos['symbol'].astype(str).isin(eligible_symbols)].copy()
-            else:
-                df_pos = df_pos.iloc[0:0].copy()
+    if version_filter:
+        if "version" in df_pos.columns:
+            df_pos = df_pos[df_pos["version"].astype(str) == str(version_filter)].copy()
+        if df_sig is not None and "version" in df_sig.columns:
+            df_sig = df_sig[df_sig["version"].astype(str) == str(version_filter)].copy()
+
+    if clean_cohort and df_sig is not None:
+        if "signal_type" in df_sig.columns:
+            df_sig = df_sig[df_sig["signal_type"].fillna("").astype(str) != "WATCHLIST"].copy()
+        if "grade" in df_sig.columns:
+            df_sig = df_sig[~df_sig["grade"].fillna("").astype(str).str.contains("LOW_VOL", na=False)].copy()
+        eligible_symbols = set(df_sig["symbol"].dropna().astype(str).tolist()) if "symbol" in df_sig.columns else set()
+        if eligible_symbols:
+            df_pos = df_pos[df_pos["symbol"].astype(str).isin(eligible_symbols)].copy()
+        else:
+            df_pos = df_pos.iloc[0:0].copy()
 
     print(f"\n FILTERS:")
     print(f"   Start Date: {start_date if start_date else 'None'}")
