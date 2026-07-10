@@ -205,6 +205,28 @@ Every new consolidation signal is scored against 5 empirical winner criteria (fr
 
 Stored in MongoDB `signals` doc as `winner_label`. Marked **experimental** — sample size is small.
 
+### 5.2 Listing Breakout Winner Classifier
+
+**Location:** `listing_day_breakout_scanner.py` — `classify_listing_winner_traits()`
+
+Every new listing day breakout signal is scored against 5 empirical winner criteria derived from the 2024–2026 historical backtest (which evaluated 486 IPOs and analyzed the common traits of trades achieving $\ge 20\%$ PnL):
+
+| Criterion | Test | Rationale / Empirical Insight |
+|---|---|---|
+| 1. Early Breakout | `days_since_listing <= 35` | 75% of historical super-winners broke out within 35 trading days post listing. |
+| 2. Volatility Cushion | `listing_range_pct >= 5.0%` | Listing day high-to-low range $\ge 5\%$ filters out dead/flat listing days. |
+| 3. Volume Spike | `volume_ratio_vs_avg >= 1.5` | Breakout day volume must be $\ge 1.5\text{x}$ the clean trailing 10-day average (which automatically excludes Day 0/1 launch volume). |
+| 4. Clean Entry | `entry_above_high_pct <= 4.0%` | Breakout close must be close to the listing high to minimize entry chasing slippage. |
+| 5. Circuit Free | `circuit_days_15 == 0` | Zero locked upper/lower circuits in the last 15 sessions. |
+
+| Score | Label |
+|---|---|
+| 4–5 | `POSSIBLE_WINNER` |
+| 2–3 | `STANDARD` |
+| 0–1 | `WATCHLIST_ONLY` |
+
+Stored in MongoDB `signals` doc as `winner_label` and displayed as a high-probability badge on Telegram alerts.
+
 ---
 
 ## 6. Market Regime Detection

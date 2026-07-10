@@ -1718,11 +1718,17 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None, bul
                 rejection_depth_pct = ((max_seen - current_price) / max_seen * 100.0) if max_seen > 0 else 0.0
                 
             score_comps = calculate_signal_score_components(tier, vol_ratio_for_tier, perfect_base_ok, post_confirm_move_pct)
-
-            # --- Sustained Check (New Logic) ---
             is_sustained = current_price >= listing_day_high
             pullback_from_high_pct = ((current_high - current_price) / current_high * 100.0) if current_high > 0 else 0.0
             max_extension_pct = ((current_high - breakout_level_for_calc) / breakout_level_for_calc * 100.0) if breakout_level_for_calc > 0 else 0.0
+
+            _winner_meta = classify_listing_winner_traits(
+                days_since_listing=days_since_listing,
+                listing_range_pct=listing_range_pct,
+                volume_ratio_vs_avg=current_volume / avg_volume if avg_volume > 0 else 1.0,
+                entry_above_high_pct=entry_above_high_pct,
+                circuit_days_15=circuit_days_15,
+            )
 
             return {
                 'symbol': symbol,
@@ -1732,6 +1738,10 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None, bul
                 'listing_day_close': listing_day_close,
                 'current_price': current_price,
                 'current_high': current_high,
+                'winner_label': _winner_meta['winner_label'],
+                'winner_score': _winner_meta['winner_score'],
+                'winner_criteria': _winner_meta['winner_criteria'],
+                'winner_flags': _winner_meta['winner_flags'],
                 'entry_price': round(entry_price, 2),
                 'stop_loss': round(stop_loss, 2),
                 'target_price': round(target_price, 2),
@@ -1802,6 +1812,71 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None, bul
         logger.error(f"Error checking breakout for {symbol}: {e}")
         return None
 
+def classify_listing_winner_traits(
+    days_since_listing: int,
+    listing_range_pct: float,
+    volume_ratio_vs_avg: float,
+    entry_above_high_pct: float,
+    circuit_days_15: int,
+) -> dict:
+    """
+    Score a new listing breakout signal against criteria common to historical super-winners (PnL >= 20%).
+    Based on backtest:
+      - 75% of winners break out within 35 trading days after listing (early breakout)
+      - Winner listing-day high-to-low range is typically 5.0% - 20.0% (volatility cushion)
+      - Vol vs 10d avg is typically >= 1.5x (strong institutional push, excluding Day 0/1 launch volume)
+      - Entry is clean (extension <= 4.0% above listing high, minimizing slippage)
+      - Circuit-free (circuit_days_15 == 0)
+    """
+    criteria_met = []
+    criteria_fail = []
+
+    # Criterion 1: Early Breakout (IPO Age Gate)
+    if days_since_listing <= 35:
+        criteria_met.append('early_breakout_le_35d')
+    else:
+        criteria_fail.append(f'late_breakout_{days_since_listing}d')
+
+    # Criterion 2: Decent Volatility Cushion (Listing Range)
+    if listing_range_pct >= 5.0:
+        criteria_met.append('listing_range_gte_5pct')
+    else:
+        criteria_fail.append('flat_listing_range')
+
+    # Criterion 3: Volume Spike confirmation (>= 1.5x of clean average)
+    if volume_ratio_vs_avg >= 1.5:
+        criteria_met.append('volume_ratio_gte_1_5')
+    else:
+        criteria_fail.append('weak_volume_ratio')
+
+    # Criterion 4: Clean Entry (Low Chasing Extension)
+    if entry_above_high_pct <= 4.0:
+        criteria_met.append('clean_entry_le_4pct')
+    else:
+        criteria_fail.append('extended_entry')
+
+    # Criterion 5: Circuit Free (Zero lockups in last 15 days)
+    if circuit_days_15 == 0:
+        criteria_met.append('zero_circuit_days')
+    else:
+        criteria_fail.append(f'circuits_detected_{circuit_days_15}d')
+
+    score = len(criteria_met)
+
+    if score >= 4:
+        label = 'POSSIBLE_WINNER'
+    elif score >= 2:
+        label = 'STANDARD'
+    else:
+        label = 'WATCHLIST_ONLY'
+
+    return {
+        'winner_label': label,
+        'winner_score': score,
+        'winner_criteria': criteria_met,
+        'winner_flags': criteria_fail
+    }
+
 def format_listing_breakout_alert(breakout_data):
     """Format listing day breakout alert"""
     symbol = breakout_data['symbol']
@@ -1825,11 +1900,23 @@ def format_listing_breakout_alert(breakout_data):
     lh_ref = listing_high
     limit_buy_price = lh_ref * 1.035 if lh_ref is not None else entry
     
+    winner_label = breakout_data.get('winner_label', 'STANDARD')
+    winner_score = breakout_data.get('winner_score', 0)
+    winner_criteria = breakout_data.get('winner_criteria', [])
+    
+    winner_badge = ""
+    if winner_label == 'POSSIBLE_WINNER':
+        winner_badge = f"\n🔥 <b>POSSIBLE WINNER (High Probability)</b> [Score: {winner_score}/5 — met: {', '.join(winner_criteria)}]\n"
+    elif winner_label == 'STANDARD':
+        winner_badge = f"\n🏷️ <b>Breakout Pattern: STANDARD</b> [Score: {winner_score}/5]\n"
+    else:
+        winner_badge = f"\n👀 <b>Breakout Pattern: WATCHLIST ONLY</b> [Score: {winner_score}/5]\n"
+        
     msg = f"""🎯 <b>LISTING DAY HIGH BREAKOUT!</b>
 
 📊 <b>{symbol}</b>
 📋 Signal Type: Listing Day Breakout
-
+{winner_badge}
 🏆 <b>TIER: {breakout_data.get('tier', 'A')}  |  💰 Position Size: {breakout_data.get('position_size_pct', 60)}%</b>
 📌 <i>{breakout_data.get('tier_rationale', '')}</i>
 
@@ -1902,8 +1989,20 @@ def format_base_breakout_alert(breakout_data):
         if hasattr(listing_date, 'strftime') else str(listing_date)
     )
 
-    return f"""📦 <b>TIER B — BASE BREAKOUT: {symbol}</b>
+    winner_label = breakout_data.get('winner_label', 'STANDARD')
+    winner_score = breakout_data.get('winner_score', 0)
+    winner_criteria = breakout_data.get('winner_criteria', [])
+    
+    winner_badge = ""
+    if winner_label == 'POSSIBLE_WINNER':
+        winner_badge = f"\n🔥 <b>POSSIBLE WINNER (High Probability)</b> [Score: {winner_score}/5 — met: {', '.join(winner_criteria)}]\n"
+    elif winner_label == 'STANDARD':
+        winner_badge = f"\n🏷️ <b>Breakout Pattern: STANDARD</b> [Score: {winner_score}/5]\n"
+    else:
+        winner_badge = f"\n👀 <b>Breakout Pattern: WATCHLIST ONLY</b> [Score: {winner_score}/5]\n"
 
+    return f"""📦 <b>TIER B — BASE BREAKOUT: {symbol}</b>
+{winner_badge}
 {'='*35}
 🥉 <b>TIER: B  |  💰 Position Size: {position_size}%</b>
 📌 {tier_rationale}
