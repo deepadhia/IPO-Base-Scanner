@@ -93,7 +93,7 @@ class TestRegressionFixes(unittest.TestCase):
         mock_last_trading_day.return_value = date(2026, 6, 2)
         mock_signals_col.update_one = MagicMock()
         mock_upsert.return_value = None
-        mock_live_price.return_value = (None, None, None) # Force fallback to fetch_data
+        mock_live_price.return_value = (None, None, None, 0.0) # Force fallback to fetch_data
 
         # Positions:
         # 1. Friday position (2026-05-29)
@@ -177,7 +177,7 @@ class TestRegressionFixes(unittest.TestCase):
         mock_last_trading_day.return_value = date(2026, 6, 2)
         mock_signals_col.update_one = MagicMock()
         mock_upsert.return_value = None
-        mock_live_price.return_value = (None, None, None)
+        mock_live_price.return_value = (None, None, None, 0.0)
 
         # Positions:
         # Thursday entry (before a Friday holiday)
@@ -311,8 +311,8 @@ class TestRegressionFixes(unittest.TestCase):
             'VOLUME': [200000]*9 + [500000]
         })
         
-        # Case A: Live price fails (None, None, None) -> price_is_live is False
-        mock_live_price.return_value = (None, None, None)
+        # Case A: Live price fails (None, None, None, 0.0) -> price_is_live is False
+        mock_live_price.return_value = (None, None, None, 0.0)
         
         listing_map = {"TESTSTOCK": today - timedelta(days=70)}
         
@@ -323,7 +323,7 @@ class TestRegressionFixes(unittest.TestCase):
             self.assertEqual(signals_found, 0)
         
         # Case B: Live price succeeds -> price_is_live is True
-        mock_live_price.return_value = (115.0, 'upstox', 120.0)
+        mock_live_price.return_value = (115.0, 'upstox', 120.0, 1000.0)
         
         # We need to mock Mongo calls inside detect_live_patterns when saving signals
         with patch('db.upsert_signal') as mock_sig, patch('db.upsert_position') as mock_pos, patch('streamlined_ipo_scanner.MongoRepository') as mock_repo, patch('streamlined_ipo_scanner.LifecycleTracker') as mock_tracker, patch('streamlined_ipo_scanner.fetch_data') as mock_fetch:
@@ -434,7 +434,7 @@ class TestRegressionFixes(unittest.TestCase):
         })
         
         # Live price succeeds
-        mock_live_price.return_value = (115.0, 'upstox', 120.0)
+        mock_live_price.return_value = (115.0, 'upstox', 120.0, 1000.0)
         from streamlined_ipo_scanner import detect_scan
         listing_map = {"TESTSTOCK": today - timedelta(days=70)}
         

@@ -256,6 +256,8 @@ Stored on every signal/position document as `position_size_weight`.
 ### 7.3 Exit Conditions (for ACTIVE positions)
 **Location:** `stop_loss_update_scan()` at lines 4135–4197.
 
+**Safety Guard:** Exit checking is suspended if the **Corporate Action Guard** detects an extreme single-day drop (>25% compared to the previous day's recorded price), preventing false triggers from stock splits, bonus share adjustments, or data errors.
+
 **Exit Trigger 1: Trailing Stop Loss**
 ```
 current_price <= trailing_stop  →  exit_reason = "Stop Loss"
@@ -420,6 +422,11 @@ db.logs.find({"action": "DAILY_SNAPSHOT", "details.position_version": "2.5.0"})
 3. Fall back to yfinance (`fetch_from_yfinance()`)
 
 **Stale data guard:** Before making any exit decision, the system validates that the latest data date is >= `get_last_expected_data_date()`. If stale, the position update is skipped and a Telegram alert is sent.
+
+**Corporate Action Guard:** Because daily price drops on the NSE/BSE mainboards are strictly limited by daily price bands (typically 20% max), any drop of **>25%** in a single day compared to the previous day's recorded price indicates a corporate action (stock split, bonus issue, extraordinary dividend) or a severe data print issue. When triggered, the system:
+1. Skips updating position statistics in MongoDB during `update_positions()` to avoid recording false drawdowns.
+2. Suspends trailing-stop/time-stop exit checking during `stop_loss_update_scan()`.
+3. Dispatches a high-priority alert to Telegram requesting manual database adjustment.
 
 **Nifty regime data:** Fetched via `utils.fetch_nifty_from_upstox()`, falling back to yfinance `^NSEI`.
 

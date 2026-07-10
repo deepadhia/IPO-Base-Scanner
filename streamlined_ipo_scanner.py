@@ -1961,6 +1961,24 @@ def update_positions():
             else:
                 logger.warning(f"⚠️ Using yesterday's close for {sym}: ₹{current_price:.2f} (market may be closed)")
         
+        # Corporate Action Guard: Detect extreme single-day price drops (>25%)
+        # which are mathematically impossible under NSE/BSE circuit limits
+        # (indicating a stock split, bonus issue, or data feed error).
+        prev_price = pos.get("current_price") or pos.get("entry_price")
+        if prev_price and prev_price > 0:
+            price_change_pct = (current_price - prev_price) / prev_price * 100.0
+            if price_change_pct <= -25.0:
+                logger.error(f"⚠️ Extreme price drop detected for {sym}: {prev_price} -> {current_price} ({price_change_pct:.2f}%). Potential stock split or data error.")
+                split_alert = f"""⚠️ <b>Potential Stock Split or Price Error Detected (Position Sync)</b>
+
+📊 Symbol: <b>{sym}</b>
+📉 Price drop: {price_change_pct:.2f}%
+💰 Yesterday: ₹{prev_price:,.2f} | Today: ₹{current_price:,.2f}
+
+⚠️ <b>Database updates suspended</b> for this symbol to prevent corruption or false stop-loss trailing. Please verify corporate actions and adjust database levels manually."""
+                send_telegram(split_alert)
+                continue
+
         pnl = (current_price - float(pos["entry_price"]))/float(pos["entry_price"])*100
         
         # Calculate days held correctly
@@ -4114,6 +4132,27 @@ def stop_loss_update_scan():
                 latest_date_str = latest_date.strftime('%Y-%m-%d')
                 price_source = f"Historical Close ({latest_date_str})"
                 
+            # Corporate Action Guard: Detect extreme single-day price drops (>25%)
+            # which are mathematically impossible under NSE/BSE circuit limits
+            # (indicating a stock split, bonus issue, or data feed error).
+            prev_price = pos.get("current_price") or pos.get("entry_price")
+            if prev_price and prev_price > 0:
+                price_change_pct = (current_price - prev_price) / prev_price * 100.0
+                if price_change_pct <= -25.0:
+                    logger.error(f"⚠️ Extreme price drop detected for {sym}: {prev_price} -> {current_price} ({price_change_pct:.2f}%). Potential stock split or data error.")
+                    old_trailing = pos.get("trailing_stop", pos.get("stop_loss", prev_price * 0.95))
+                    split_alert = f"""⚠️ <b>Potential Stock Split or Price Error Detected (Stop-Loss Scan)</b>
+
+📊 Symbol: <b>{sym}</b>
+📉 Price drop: {price_change_pct:.2f}%
+💰 Yesterday: ₹{prev_price:,.2f} | Today: ₹{current_price:,.2f}
+🛑 Trailing Stop: ₹{old_trailing:,.2f}
+
+⚠️ <b>Exit checks suspended</b> for this symbol to prevent false stop-loss trigger. Please verify corporate actions and adjust database levels manually."""
+                    send_telegram(split_alert)
+                    failed_updates.append(sym)
+                    continue
+
             entry_price = pos["entry_price"]
             old_trailing = pos["trailing_stop"]
             
