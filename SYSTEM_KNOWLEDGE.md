@@ -117,7 +117,7 @@ IPO-Base-Scanner/
 
 **Key rules:**
 - Age constraint: IPOs older than 730 days are rejected
-- Listing Volume Floor: IPOs with < 150,000 listing-day shares are rejected (Day 0 / actual listing day is **exempt** — volume may not be settled in DB yet)
+- Breakout Volume Floor: IPOs with < 150,000 breakout-day shares are rejected (Day 0 / actual listing day is exempt — volume may not be settled in DB yet)
 - Base Duration Floor: requires >= 3 trading days of post-listing history
 - Stop Loss: 15-day local swing low, buffered by 3%, **hard-capped at 12% max risk**
 - Observation State: Fresh symbols (< 5 days old) entering breakout levels go into `PENDING` state for 60 minutes to verify EOD close confirmation
@@ -272,7 +272,13 @@ current_price <= trailing_stop  →  exit_reason = "Stop Loss"
 | Other (fallback) | > 30 days AND price < entry x 0.95 | — | `Time Stop -5%` |
 | Other (fallback) | > 60 days AND price < entry x 0.92 | — | `Time Stop -8%` |
 
-**Winner Archetype Exempt:** `max_runup_pct >= 15.0%` → patience stops are **never applied**.
+**Winner Archetype Exempt:** `max_runup_pct >= 15.0%` ➔ standard patience stops are **never applied**.
+
+**Exit Trigger 3: Secondary Stagnant Position Guard (Global Portfolio Efficiency)**
+Regardless of early peak runups or winner archetype status, if a position is held for **$\ge 40$ days** and its **current PnL is $< 10.0\%$**, it is exited to prevent capital lock-in:
+```
+days_held >= 40 AND current_pnl < 10.0%  ➔  exit_reason = "Time Stop - Stagnant Position (40d)"
+```
 
 All thresholds configurable via `.env`:
 ```

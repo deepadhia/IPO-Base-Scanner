@@ -984,6 +984,7 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None, bul
         logger.info(f"⏭️ Skipping RE/SME symbol early: {symbol}")
         return None
         
+    _vol = 0.0
     try:
         listing_day_high = listing_info['listing_day_high']
         listing_day_low = listing_info['listing_day_low']
@@ -1025,27 +1026,8 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None, bul
                 return None
             logger.info(f"ℹ️ {symbol} (NSE Addition) passed BSE liquidity checks. BSE Perfect Base: {bse_perfect_base}")
 
-        # Listing Volume Floor check
-        # Day-0 (days_since_listing == 0) is intentionally exempt: listing-day
-        # volume may not be fully settled in the DB yet, so we don't reject on Day 0.
-        if days_since_listing == 0:
-            logger.info(
-                f"[v3.3.0] Volume floor exempt on listing day (Day 0) for {symbol} "
-                f"— recorded listing_day_volume={listing_day_volume:,.0f}. "
-                f"Floor will apply from Day 1 onwards."
-            )
-        elif listing_day_volume < 150000 and not is_nse_addition:
-            logger.info(
-                f"⏭️ Skipping {symbol} — listing_day_volume={listing_day_volume:,.0f} < 150k floor "
-                f"(days_since_listing={days_since_listing})"
-            )
-            write_daily_log("listing_day", symbol, "REJECTED_BREAKOUT", {
-                "reason": "LISTING_VOLUME_BELOW_FLOOR",
-                "listing_day_volume": listing_day_volume,
-                "days_since_listing": days_since_listing,
-                "required_minimum": 150000
-            }, log_type="REJECTED")
-            return None
+        # Note: Listing Day Volume Floor check has been moved to the breakout check block
+        # below to check the breakout day volume instead of the listing day volume.
 
         # Standardized Rejection Telemetry (Phase 2.2)
         # P0-5 Fix: Initialize current_high to 0.0 (safe sentinel) before the closure is
@@ -1186,6 +1168,25 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None, bul
         else:
             logger.info(f"✅ Using live price for {symbol} breakout detection: ₹{current_price:.2f} (High: ₹{current_high:.2f}) from {price_source}")
         
+        # Override with real-time live volume if available
+        if price_is_live and _vol is not None and _vol > 0.0:
+            current_volume = float(_vol)
+        
+        # Breakout Day Volume Floor check (Minimum 150,000 shares on breakout day)
+        # Day-0 (days_since_listing == 0) is intentionally exempt: listing-day
+        # volume may not be fully settled in the DB yet, so we don't reject on Day 0.
+        if days_since_listing > 0:
+            if current_volume < 150000 and not is_nse_addition:
+                logger.info(
+                    f"⏭️ Skipping {symbol} — breakout_day_volume={current_volume:,.0f} < 150k floor "
+                    f"(days_since_listing={days_since_listing})"
+                )
+                _log_listing_rejection("BREAKOUT_VOLUME_BELOW_FLOOR", current_volume, 150000, {
+                    "breakout_volume": current_volume,
+                    "days_since_listing": days_since_listing,
+                })
+                return None
+
         # --- INSTITUTIONAL LIQUIDITY GUARDRAIL (Phase 2.5) ---
         avg_turnover_cr, circuit_days_15, mcap_cr = scanner_module.get_liquidity_metrics(symbol, df)
         

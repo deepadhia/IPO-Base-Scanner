@@ -4200,6 +4200,11 @@ def stop_loss_update_scan():
                             exit_reason = f"Time Stop -5% (Underperforming after {DEAD_MONEY_DAYS_OTHER} days)"
                         elif days_held > 60 and current_price < entry_price * 0.92:
                             exit_reason = "Time Stop -8% (Underperforming after 60 days)"
+                
+                # Secondary Stagnant Position Guard (applies globally, even to winner archetypes that pulled back)
+                if not exit_reason and days_held >= 40:
+                    if pnl < 10.0:
+                        exit_reason = f"Time Stop - Stagnant Position (40d underperforming < 10% PnL)"
 
                 if exit_reason:
                     # Outcome Classification

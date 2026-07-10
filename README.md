@@ -29,7 +29,7 @@ Targets IPOs from listing day up to **730 calendar days (2 years)** post-listing
 
 **Flow & Key Rules:**
 1. **Age Constraint:** Filters out IPOs older than **730 days (2 years)** to focus strictly on high-velocity setups.
-2. **Listing Volume Floor (v3.3.0):** IPOs whose listing-day traded volume was `< 150,000 shares` are rejected from Day 1 onwards. This removes illiquid listings that pass price filters but lack the institutional participation needed to sustain momentum. Day 0 (the actual listing day) is exempt since volume may not be fully settled in the DB yet.
+2. **Breakout Volume Floor (v3.3.0):** IPOs whose breakout-day traded volume was `< 150,000 shares` are rejected. This removes illiquid listings that pass price filters but lack the institutional participation needed to sustain momentum. Day 0 (the actual listing day) is exempt since volume may not be fully settled in the DB yet.
 3. **Base Duration Floor (v3.3.0):** Standard breakouts require at least **3 trading days** of post-listing history before the scanner qualifies a signal. Prevents false breakout reads from single-day listing spikes.
 4. **Stop Loss (15-Day Local Swing Low, 12% Risk Cap):** Dynamically calculates the stop loss based on the 15-day local swing low (buffered by 3%), capped at a tight maximum risk of **12%** to shield against large drawdowns.
 5. **Observation State:** Freshly listed symbols (<5 days old) entering breakout levels enter a `PENDING` state for **60 minutes** during market hours to verify EOD close confirmation.
@@ -84,7 +84,8 @@ Research across the 2024–2026 Mainboard IPO universe confirmed that the previo
 
 * **IPO Discovery Breakouts (`grade == "LISTING_BREAKOUT"`):** If held for **≥ 20 trading days** and peak runup has never reached **≥ 4%**, it is closed at the market with exit reason `"Time Stop - IPO Dead Money"`.
 * **Consolidation Breakouts:** If held for **≥ 21 trading days** and peak runup has never reached **≥ 5%**, it is closed at the market with exit reason `"Time Stop - Consolidation Dead Money"`.
-* **Winner Archetype Exempt:** Positions where `max_runup_pct ≥ 15%` are treated as confirmed momentum trades and are never cut by the patience stop.
+* **Winner Archetype Exempt:** Positions where `max_runup_pct ≥ 15%` are treated as confirmed momentum trades and are never cut by the standard patience stop.
+* **Secondary Stagnant Position Guard (v3.3.0):** Regardless of early peak runups or winner archetype status, if any position is held for **≥ 40 days** and its **current PnL is < 10%**, it is closed with the exit reason `"Time Stop - Stagnant Position (40d underperforming < 10% PnL)"` to prevent capital lock-in.
 
 All thresholds are configurable via environment variables:
 ```
@@ -113,7 +114,7 @@ The system rejects aggressively. A setup is terminated at the first failing cond
 
 | Filter | Reason Logged |
 |---|---|
-| Listing-day volume `< 150,000 shares` | `LISTING_VOLUME_BELOW_FLOOR` — illiquid listing |
+| Breakout-day volume `< 150,000 shares` | `BREAKOUT_VOLUME_BELOW_FLOOR` — illiquid listing |
 | Base history `< 3 trading days` | `BASE_DURATION_BELOW_MINIMUM` |
 | Price below `₹20.00` | `too_cheap` — avoid penny stock manipulation |
 | Daily Turnover `< ₹2.0 Cr` | `LIQUIDITY_TRAP` — avoid capital lock-in |
