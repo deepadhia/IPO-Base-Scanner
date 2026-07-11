@@ -46,7 +46,7 @@ scanner_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(scanner_module)
 
 # Import version and logging utilities from main scanner
-SCANNER_VERSION = "3.3.0"  # v3.3.0: Volume floor, base-duration guard fix, 20-day patience stop, Limit Buy alerts
+SCANNER_VERSION = "3.4.0"  # v3.4.0: Re-Entry Breakouts, Peak Price Tracking, Paper Cap Handling
 write_daily_log = getattr(scanner_module, 'write_daily_log', lambda *a, **k: None)
 
 fetch_data = scanner_module.fetch_data
@@ -1812,6 +1812,99 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None, bul
         logger.error(f"Error checking breakout for {symbol}: {e}")
         return None
 
+def commit_trade_to_db(breakout_data):
+    """
+    Atomically commit the breakout signal and corresponding position to MongoDB
+    subject to portfolio cap rules.
+    Returns: (success, portfolio_full, active_count, market_regime, size_multiplier)
+    """
+    try:
+        from db import upsert_signal, upsert_position, db
+        
+        # 1. Fetch current active count
+        active_positions = list(db.positions.find({"status": "ACTIVE"}))
+        active_count = len(active_positions)
+        
+        # 2. Get market regime and size weight
+        mr = breakout_data.get('market_regime', 'UNKNOWN')
+        regime_multipliers = {
+            "BULL": 1.0,
+            "WEAK_BULL": 0.8,
+            "RANGE": 0.6,
+            "CORRECTION": 0.4
+        }
+        size_mult = regime_multipliers.get(mr, 0.4)
+        
+        # Check if portfolio is full (Soft Cap of 10)
+        soft_cap = getattr(scanner_module, 'MAX_ACTIVE_POSITIONS', 10)
+        portfolio_full = active_count >= soft_cap
+        
+        # Generate signal_id (deterministic format)
+        today_str = datetime.now().strftime("%Y%m%d")
+        signal_id = f"BREAKOUT_{breakout_data['symbol']}_{today_str}"
+        
+        # Create signal doc
+        signal_doc = {
+            "signal_id": signal_id,
+            "symbol": breakout_data['symbol'],
+            "signal_date": datetime.now(),
+            "signal_time": _now_ist().strftime("%H:%M:%S"),
+            "entry_price": breakout_data['entry_price'],
+            "stop_loss": breakout_data['stop_loss'],
+            "target_price": breakout_data['target_price'],
+            "status": "PAPER_ONLY" if portfolio_full else "ACTIVE",
+            "volume_spike": breakout_data['volume_spike'],
+            "volume_vs_listing_day": breakout_data['volume_vs_listing_day'],
+            "listing_range_pct": breakout_data['listing_range_pct'],
+            "risk_reward": breakout_data['risk_reward'],
+            "days_since_listing": breakout_data['days_since_listing'],
+            "winner_label": breakout_data.get('winner_label', 'STANDARD'),
+            "winner_score": breakout_data.get('winner_score', 0),
+            "tier": breakout_data.get('tier', 'A'),
+            "market_regime": mr,
+            "version": SCANNER_VERSION,
+            "scanner": "listing_day",
+            "is_reentry": breakout_data.get("is_reentry", False),
+            "parent_signal_id": breakout_data.get("parent_signal_id", None),
+            "reentry_count": breakout_data.get("reentry_count", 0)
+        }
+        upsert_signal(signal_doc)
+        
+        # Create position doc
+        pos_doc = {
+            "symbol": breakout_data['symbol'],
+            "entry_date": datetime.now(),
+            "entry_price": breakout_data['entry_price'],
+            "current_price": breakout_data['current_price'],
+            "stop_loss": breakout_data['stop_loss'],
+            "trailing_stop": breakout_data['stop_loss'],
+            "target_price": breakout_data['target_price'],
+            "status": "PAPER_ONLY" if portfolio_full else "ACTIVE",
+            "days_held": 0,
+            "max_runup_pct": 0.0,
+            "max_drawdown_pct": 0.0,
+            "grade": breakout_data.get('winner_label', 'STANDARD'),
+            "position_size_pct": breakout_data.get('position_size_pct', 60),
+            "version": SCANNER_VERSION,
+            "strategy_version": "2.5.0-listing-day",
+            "is_reentry": breakout_data.get("is_reentry", False),
+            "parent_signal_id": breakout_data.get("parent_signal_id", None),
+            "reentry_count": breakout_data.get("reentry_count", 0)
+        }
+        upsert_position(pos_doc)
+        
+        if portfolio_full:
+            # Portfolio is full, signal and paper position are saved but not counted as active
+            return True, True, active_count, mr, size_mult
+        
+        # Re-fetch active count including the newly added trade
+        active_count += 1
+        return True, False, active_count, mr, size_mult
+        
+    except Exception as e:
+        logger.error(f"Error in commit_trade_to_db for {breakout_data.get('symbol')}: {e}")
+        return False, False, 0, 'UNKNOWN', 0.4
+
 def classify_listing_winner_traits(
     days_since_listing: int,
     listing_range_pct: float,
@@ -2313,6 +2406,94 @@ def scan_listing_day_breakouts():
             logger.error(f"Error scanning {symbol}: {e}")
             continue
     
+    
+    # ---------------------------------------------------------
+    # Re-Entry Breakout Scanning
+    # ---------------------------------------------------------
+    logger.info(f"\n{'='*60}")
+    logger.info("⚡ Scanning for Re-Entry Breakouts...")
+    try:
+        from db import get_reentry_watchlist
+        reentry_watchlist = get_reentry_watchlist()
+        if reentry_watchlist:
+            logger.info(f"📋 Found {len(reentry_watchlist)} candidates for re-entry.")
+            for pos in reentry_watchlist:
+                symbol = pos.get('symbol')
+                entry_price = float(pos.get('entry_price', 0))
+                peak_price = float(pos.get('peak_price_during_trade', entry_price))
+                
+                logger.info(f"\n🔍 Checking Re-Entry for {symbol} (Trigger > ₹{peak_price:.2f})...")
+                
+                # Reset network call flag
+                if hasattr(scanner_module, 'network_call_made'):
+                    scanner_module.network_call_made = False
+                    
+                try:
+                    live_price, live_source, day_high, live_vol = scanner_module.get_live_price(symbol)
+                    if live_price is None or live_price <= 0:
+                        continue
+                    
+                    # Ensure naive datetime for today
+                    today_date = datetime.now().date()
+                    
+                    if day_high > peak_price or live_price > peak_price:
+                        # Liquidity Check (Basic, bypasses strict 1.5x rule)
+                        turnover = live_price * live_vol
+                        if live_vol >= 150000 and turnover >= 10000000:
+                            logger.info(f"⚡ RE-ENTRY TRIGGERED for {symbol}! Live: ₹{live_price:.2f}, Vol: {live_vol}")
+                            
+                            # Construct breakout dict
+                            breakout = {
+                                "symbol": symbol,
+                                "type": "RE_ENTRY",
+                                "entry_price": live_price,
+                                "stop_loss": live_price * 0.92, # Standard 8% stop loss
+                                "target_price": live_price * 1.20, # Initial 20% target
+                                "risk_reward": 2.5,
+                                "listing_day_high": peak_price, # Store peak here for reference
+                                "current_price": live_price,
+                                "volume_spike": 0, # bypassed
+                                "volume_vs_listing_day": 0,
+                                "listing_range_pct": 0,
+                                "days_since_listing": 0,
+                                "is_reentry": True,
+                                "parent_signal_id": pos.get("signal_id", f"parent_{symbol}"),
+                                "reentry_count": pos.get("reentry_count", 0) + 1,
+                                "price_source": live_source,
+                                "pattern_type": "RE_ENTRY",
+                                "market_regime": scanner_module.get_market_regime(today_date),
+                                "tier": "RE-ENTRY",
+                                "position_size_pct": 100,
+                                "tier_rationale": "Re-Entry Breakout (Liquidity filters bypassed)"
+                            }
+                            
+                            # Save signal and position atomically
+                            success, portfolio_full, active_count, _mr, size_mult = commit_trade_to_db(breakout)
+                            if success:
+                                # Send Alert
+                                limit_buy = live_price * 1.02
+                                msg = f"⚡ <b>RE-ENTRY BREAKOUT!</b>\n\n📊 <b>{symbol}</b>\n📋 Trigger: Crossed peak ₹{peak_price:.2f}\n"
+                                msg += f"💰 Current Price: ₹{live_price:,.2f} <i>({live_source})</i>\n"
+                                msg += f"🛑 Stop Loss: ₹{breakout['stop_loss']:,.2f}\n"
+                                if portfolio_full:
+                                    msg = f"⚠️ <b>[PORTFOLIO FULL - PAPER ONLY]</b> (Active: {active_count})\n" + msg
+                                msg += f"\n⚠️ Action Required: Place a <b>Limit Buy Order</b> around <b>₹{limit_buy:,.2f}</b>"
+                                send_telegram(msg)
+                                breakouts_found += 1
+                        else:
+                            logger.info(f"🚫 {symbol} crossed trigger (₹{peak_price:.2f}) but failed Re-Entry Liquidity check (Vol: {live_vol}, T/O: ₹{turnover/10000000:.2f}Cr)")
+                except Exception as e:
+                    logger.error(f"Error checking re-entry for {symbol}: {e}")
+                    
+                # Rate limiting
+                if getattr(scanner_module, 'network_call_made', False):
+                    time.sleep(0.3)
+                    
+        else:
+            logger.info("✅ No pending re-entry candidates in the 30-day watchlist.")
+    except Exception as e:
+        logger.error(f"Error in Re-Entry scanning loop: {e}")
+
     logger.info(f"\n{'='*60}")
     logger.info(f"✅ Scan complete: {breakouts_found} breakouts found")
     save_pending_breakouts(pending_breakouts)

@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Version](https://img.shields.io/badge/version-3.3.0-orange.svg)](https://github.com/Deep-Adhia/IPO-Base-Scanner)
+[![Version](https://img.shields.io/badge/version-3.4.0-orange.svg)](https://github.com/Deep-Adhia/IPO-Base-Scanner)
 [![Automated](https://img.shields.io/badge/automation-GitHub%20Actions-green.svg)](https://github.com/features/actions)
 
 This is **not** a simple breakout scanner.
@@ -558,6 +558,7 @@ For experiment cutovers and baseline tracking, see `EXPERIMENT_CHANGELOG.md`.
 
 | Version | Date | Key Changes |
 |---|---|---|
+| **v3.4.0** | 2026-07-11 | **Re-Entry Breakouts:** Continuous peak price tracking, dynamic re-entry triggers (bypassing strict DNA filters while enforcing liquidity floors), DB backfill migration, and PAPER_ONLY caps for re-entries. |
 | **v3.3.0** | 2026-06-07 | Listing volume floor (≥150k shares), base-duration floor (≥3d), 20-day patience stop, Limit Buy order instructions in alerts, `position_version` log field for cohort separation |
 | **v2.5.0** | 2026-04-23 | MongoDB-only architecture, winner trait classification, forensic audit mode, master_audit.py |
 | **v2.4.0** | 2026-04-15 | Modular enrichment layer, lifecycle PnL reconstruction |
@@ -574,4 +575,4 @@ For experiment cutovers and baseline tracking, see `EXPERIMENT_CHANGELOG.md`.
 
 ---
 
-<sub>Built for systematic IPO momentum trading | v3.3.0 | Automated via GitHub Actions + Cloudflare Worker Dispatcher | MongoDB Atlas Infrastructure | Data-Driven Filter Optimization</sub>
+<sub>Built for systematic IPO momentum trading | v3.4.0 | Automated via GitHub Actions + Cloudflare Worker Dispatcher | MongoDB Atlas Infrastructure | Data-Driven Filter Optimization</sub>

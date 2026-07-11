@@ -4,7 +4,7 @@ This file tracks analysis and logging cutovers so experiment windows stay compar
 
 ## Current Active Baseline
 
-- `scanner_version`: `3.3.0`
+- `scanner_version`: `3.4.0`
 - `log_schema_version`: `2026-04-23.v1`
 - recommended clean analysis start: `2026-07-05` (param tightening: CONSOL_WINDOWS=10,20, MIN_LIVE_GRADE=B)
 
@@ -43,6 +43,7 @@ db.logs.find({"action": "DAILY_SNAPSHOT", "details.position_version": "2.5.0"})
 
 | Date         | Version | Change                                                                                                                                                                                                                           |
 | ------------ | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `2026-07-11` | `3.4.0` | **Re-Entry Breakouts:** Added tracking for `peak_price_during_trade`. Allows stopped-out valid setups to trigger a Re-Entry if they cross the peak again within 30 days. Re-entries bypass DNA filters but enforce liquidity thresholds, yielding +76.8% absolute port return in backtests. Implemented `PAPER_ONLY` caps for re-entries. |
 | `2026-07-10` | `3.3.0` | **Corporate Action Guard:** Suspends exits on >25% drops to prevent false stop triggers. **Breakout Volume Floor:** Volume floor (≥150k) now checks breakout-day volume instead of Day 0. **Stagnant Position Guard:** Exits trades held ≥40d with PnL <10%. |
 | `2026-07-05` | `3.3.0` | **Param tightening:** `CONSOL_WINDOWS` narrowed to `10,20` only; `MIN_LIVE_GRADE` raised from `C` to `B`. Based on 64-trade closed-trade analysis (Grade C avg -2.64%/median -5.55%; 40d avg -7.65%). New clean-cohort baseline. |
 | `2026-06-07` | `3.3.0` | Listing volume floor (≥150k), base-duration guard fix, 20-day patience stop, Limit Buy alerts, `position_version` log field                                                                                                      |

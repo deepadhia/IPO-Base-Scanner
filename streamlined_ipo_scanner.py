@@ -12,7 +12,7 @@ Optimized IPO breakout scanner:
 - Dry-run and heartbeat modes
 """
 
-SCANNER_VERSION = "3.3.0"  # v3.3.0: Volume floor, base-duration guard fix, 20-day patience stop, Limit Buy alerts
+SCANNER_VERSION = "3.4.0"  # v3.4.0: Re-Entry Breakouts, Peak Price Tracking, Paper Cap Handling
 LOG_SCHEMA_VERSION = "2026-04-23.v1"
 
 import os
@@ -1873,6 +1873,7 @@ def update_positions():
     schema_cols = [
         "max_runup_pct",
         "max_drawdown_pct",
+        "peak_price_during_trade",
         "outcome_type",
         "holding_efficiency_pct",
         "time_to_failure_days",
@@ -1895,7 +1896,7 @@ def update_positions():
         except Exception:
             pass
 
-    for idx, pos in df_pos[df_pos["status"]=="ACTIVE"].iterrows():
+    for idx, pos in df_pos[df_pos["status"].isin(["ACTIVE", "PAPER_ONLY"])].iterrows():
         sym = pos["symbol"]
         
         # Handle entry_date - convert to date object
@@ -1916,9 +1917,10 @@ def update_positions():
         
         # Try to get live price first (more accurate for exit decisions)
         try:
-            live_price, live_source, _, _vol = get_live_price(sym)
+            live_price, live_source, live_day_high, _vol = get_live_price(sym)
             if live_price is not None and live_price > 0:
                 current_price = live_price
+                day_high_for_peak = live_day_high if (live_day_high and live_day_high > 0) else current_price
                 price_source = f"Live ({live_source})"
                 logger.info(f"✅ Using live price for {sym}: ₹{current_price:.2f} from {live_source}")
         except Exception as e:
@@ -1952,6 +1954,7 @@ def update_positions():
             
             # Data is fresh (today or yesterday) - safe to use
             current_price = float(df["CLOSE"].iloc[-1])
+            day_high_for_peak = float(df["HIGH"].iloc[-1]) if "HIGH" in df.columns else current_price
             latest_date_str = latest_date.strftime('%Y-%m-%d')
             price_source = f"Historical Close ({latest_date_str})"
             
@@ -1995,6 +1998,15 @@ def update_positions():
         
         new_max_runup = max(current_max_runup, pnl)
         new_max_drawdown = min(current_max_drawdown, pnl)
+        
+        # Calculate Peak Price during the trade
+        current_peak_price = pos.get("peak_price_during_trade")
+        if pd.isna(current_peak_price) or current_peak_price is None or current_peak_price == "":
+            current_peak_price = float(pos.get("entry_price", 0.0))
+        else:
+            current_peak_price = float(current_peak_price)
+            
+        new_peak_price = max(current_peak_price, float(day_high_for_peak), float(current_price))
 
         # Dynamically record next-day open price for paper validation (Option A)
         next_day_open = pos.get("next_day_open")
@@ -2049,8 +2061,8 @@ def update_positions():
         # Exits and trailing-stop updates are owned SOLELY by stop_loss_update_scan()
         # update_positions() only performs a price and metrics snapshot refresh.
         
-        df_pos.loc[idx, ["current_price", "pnl_pct", "days_held", "max_runup_pct", "max_drawdown_pct", "next_day_open"]] = [
-            float(current_price), float(pnl), int(days), new_max_runup, new_max_drawdown, next_day_open
+        df_pos.loc[idx, ["current_price", "pnl_pct", "days_held", "max_runup_pct", "max_drawdown_pct", "next_day_open", "peak_price_during_trade"]] = [
+            float(current_price), float(pnl), int(days), new_max_runup, new_max_drawdown, next_day_open, new_peak_price
         ]
         
         # Conflict Detection Guard: Warn if the position has breached its stop loss,
@@ -2073,6 +2085,7 @@ def update_positions():
                 "days_held": int(days),
                 "max_runup_pct": float(new_max_runup),
                 "max_drawdown_pct": float(new_max_drawdown),
+                "peak_price_during_trade": float(new_peak_price),
                 "updated_at": datetime.now(timezone.utc),
             }
             if not pd.isna(next_day_open) and next_day_open is not None:
@@ -3936,12 +3949,12 @@ def stop_loss_update_scan():
     for col in ["shadow_status_8pct", "shadow_status_10pct", "shadow_status_12pct"]:
         # Use series assignment to avoid deprecation warnings
         active_positions_all[col] = active_positions_all[col].fillna(
-            active_positions_all["status"].apply(lambda s: "ACTIVE" if s == "ACTIVE" else "CLOSED")
+            active_positions_all["status"].apply(lambda s: "ACTIVE" if s in ("ACTIVE", "PAPER_ONLY") else "CLOSED")
         )
             
     # Find active or shadow-active positions
     def is_shadow_active(pos_row):
-        is_real_active = pos_row.get("status") == "ACTIVE"
+        is_real_active = pos_row.get("status") in ("ACTIVE", "PAPER_ONLY")
         is_shadow_active_8 = pos_row.get("shadow_status_8pct", "CLOSED") == "ACTIVE"
         is_shadow_active_10 = pos_row.get("shadow_status_10pct", "CLOSED") == "ACTIVE"
         is_shadow_active_12 = pos_row.get("shadow_status_12pct", "CLOSED") == "ACTIVE"
@@ -4176,8 +4189,8 @@ def stop_loss_update_scan():
             new_trailing = float(old_trailing)
             is_winner_archetype = (new_max_runup >= 15.0)
 
-            # Manage real trade only if it is active in reality
-            if pos["status"] == "ACTIVE":
+            # Manage trade if active or paper only
+            if pos["status"] in ("ACTIVE", "PAPER_ONLY"):
                 if current_price <= old_trailing:  # Use OLD trailing stop for exit check
                     exit_reason = "Stop Loss"
                 elif not is_winner_archetype:
@@ -4234,8 +4247,9 @@ def stop_loss_update_scan():
                         time_to_failure_min = int(time_to_failure_days * 390)
                         
                     # Close position - use current price (live or historical)
+                    target_status = "PAPER_CLOSED" if pos["status"] == "PAPER_ONLY" else "CLOSED"
                     df_positions.loc[idx, ["status", "exit_date", "exit_price", "pnl_pct", "days_held", "max_runup_pct", "max_drawdown_pct", "outcome_type", "holding_efficiency_pct", "time_to_failure_days", "time_to_failure_min"]] = [
-                        "CLOSED", datetime.today().strftime("%Y-%m-%d"), current_price, pnl, days_held,
+                        target_status, datetime.today().strftime("%Y-%m-%d"), current_price, pnl, days_held,
                         new_max_runup, new_max_drawdown, outcome_type, holding_efficiency_pct, time_to_failure_days, time_to_failure_min
                     ]
                     close_active_signal(sym, current_price, pnl, days_held, exit_reason)
@@ -4261,7 +4275,10 @@ def stop_loss_update_scan():
                     })
                     
                     # Send exit alert
+                    is_paper_trade = (pos["status"] == "PAPER_ONLY")
                     exit_msg = format_exit_alert(sym, exit_reason, current_price, pnl, days_held, entry_price)
+                    if is_paper_trade:
+                        exit_msg = "⚠️ <b>[PAPER ONLY EXIT]</b>\n" + exit_msg
                     exit_msg += f"\n\n📊 <b>Outcome:</b> {outcome_type} (Peak: +{new_max_runup:.1f}%)"
                     send_telegram(exit_msg)
 

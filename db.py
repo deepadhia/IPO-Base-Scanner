@@ -36,7 +36,7 @@ db_metrics = {
 }
 
 # Versioning and Safeguards
-SCANNER_VERSION = "3.3.0"  # v3.3.0: Volume floor, base-duration guard fix, 20-day patience stop, Limit Buy alerts
+SCANNER_VERSION = "3.4.0"  # v3.4.0: Re-Entry Breakouts, Peak Price Tracking, Paper Cap Handling
 MAX_DAILY_REJECTIONS = 500
 _rejection_guard_warned = False
 
@@ -91,6 +91,7 @@ def ensure_indexes():
         return
     signals_col.create_index("signal_id", unique=True)
     positions_col.create_index("symbol", unique=True)
+    positions_col.create_index([("symbol", 1), ("status", 1)])
     logs_col.create_index("log_id", unique=True)
     logs_col.create_index("timestamp", expireAfterSeconds=2592000) # 30 days TTL
     logs_col.create_index("symbol")
@@ -536,18 +537,27 @@ def get_all_signals_df(status: str = None):
 
 
 def close_signal_in_db(symbol: str, exit_price: float, pnl_pct: float, days_held: int, exit_reason: str):
-    """Mark the most-recent ACTIVE signal for a symbol as CLOSED in MongoDB."""
+    """Mark the most-recent ACTIVE or PAPER_ONLY signal for a symbol as CLOSED or PAPER_CLOSED in MongoDB."""
     if signals_col is None:
         return
     try:
+        # Find if the most recent signal is PAPER_ONLY or ACTIVE
+        last_sig = signals_col.find_one(
+            {"symbol": symbol, "status": {"$in": ["ACTIVE", "PAPER_ONLY"]}},
+            sort=[("signal_date", -1)]
+        )
+        is_paper = last_sig and last_sig.get("status") == "PAPER_ONLY"
+        target_status = "PAPER_CLOSED" if is_paper else "CLOSED"
+
         signals_col.update_many(
             {"symbol": symbol, "$or": [
                 {"status": "ACTIVE"},
+                {"status": "PAPER_ONLY"},
                 {"lifecycle_state": "POSITION_ACTIVE"},
             ]},
             {"$set": {
-                "status": "CLOSED",
-                "lifecycle_state": "CLOSED",
+                "status": target_status,
+                "lifecycle_state": target_status,
                 "exit_date": datetime.now(timezone.utc),
                 "exit_price": float(exit_price),
                 "pnl_pct": float(pnl_pct),
@@ -560,10 +570,10 @@ def close_signal_in_db(symbol: str, exit_price: float, pnl_pct: float, days_held
         # SYNC: Also close the record in positions collection if it exists
         if positions_col is not None:
             positions_col.update_one(
-                {"symbol": symbol, "status": "ACTIVE"},
+                {"symbol": symbol, "status": {"$in": ["ACTIVE", "PAPER_ONLY"]}},
                 {"$set": {
-                    "status": "CLOSED",
-                    "lifecycle_state": "CLOSED",
+                    "status": target_status,
+                    "lifecycle_state": target_status,
                     "exit_date": datetime.now(timezone.utc),
                     "exit_price": float(exit_price),
                     "pnl_pct": float(pnl_pct),
@@ -578,11 +588,11 @@ def close_signal_in_db(symbol: str, exit_price: float, pnl_pct: float, days_held
 
 
 def get_active_symbols() -> list:
-    """Return list of symbols that have an ACTIVE position in MongoDB."""
+    """Return list of symbols that have an ACTIVE or PAPER_ONLY position in MongoDB."""
     if positions_col is None:
         return []
     try:
-        docs = positions_col.find({"status": "ACTIVE"}, {"symbol": 1, "_id": 0})
+        docs = positions_col.find({"status": {"$in": ["ACTIVE", "PAPER_ONLY"]}}, {"symbol": 1, "_id": 0})
         return [d["symbol"] for d in docs]
     except Exception as e:
         logger.error(f"[DB] get_active_symbols failed: {e}")
@@ -691,3 +701,18 @@ def update_cached_market_cap(symbol: str, market_cap_cr: float):
         logger.error(f"[DB] update_cached_market_cap failed for {symbol}: {e}")
 
 
+def get_reentry_watchlist() -> list:
+    """Retrieve all closed positions within the last 30 days that have not already triggered a re-entry."""
+    if positions_col is None:
+        return []
+    try:
+        thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
+        docs = positions_col.find({
+            "status": {"$in": ["CLOSED", "PAPER_CLOSED"]},
+            "exit_date": {"$gte": thirty_days_ago},
+            "reentry_count": {"$in": [0, None]} # Not already re-entered
+        })
+        return list(docs)
+    except Exception as e:
+        logger.error(f"[DB] get_reentry_watchlist failed: {e}")
+        return []

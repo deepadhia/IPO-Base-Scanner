@@ -59,7 +59,7 @@ get_live_price = scanner_module.get_live_price
 is_market_day = getattr(scanner_module, 'is_market_day', lambda: True)
 write_daily_log = scanner_module.write_daily_log  # Use shared writer — prevents version drift
 
-SCANNER_VERSION = "3.3.0"  # v3.3.0: Volume floor, base-duration guard fix, 20-day patience stop, Limit Buy alerts
+SCANNER_VERSION = "3.4.0"  # v3.4.0: Re-Entry Breakouts, Peak Price Tracking, Paper Cap Handling
 
 # write_daily_log is now imported from scanner_module above (shared writer).
 

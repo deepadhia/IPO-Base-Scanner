@@ -129,6 +129,22 @@ IPO-Base-Scanner/
 
 ---
 
+### 3.3 Re-Entry Breakout Module (v3.4.0)
+
+**Target:** `CLOSED` or `PAPER_CLOSED` trades that were stopped out within the last 30 days but re-break above their `peak_price_during_trade`.
+
+**Core Philosophy:** A shakeout below the stop-loss is often a structural reset for major winners. Re-entries capitalize on valid structural breakouts that simply required a deeper volatility cushion.
+
+**Key rules:**
+- **Trigger:** Current price or day high crosses above the `peak_price_during_trade` (highest price achieved while the parent trade was active).
+- **Time Constraint:** The parent trade must have closed within the last 30 days.
+- **Liquidity Check:** Enforces a basic floor (>150,000 volume, >1Cr turnover).
+- **DNA Filter Bypass:** Re-entries intentionally bypass the strict 1.5x volume spike and entry extension rules required for primary breakouts, as testing proved these filters degrade re-entry yield by artificially suppressing valid "legacy base" breakouts.
+- **Re-Entry Cap:** Maximum of 1 re-entry per parent trade (`reentry_count`).
+- **Portfolio Handling:** Re-entries consume portfolio slots just like normal trades. If the cap is full, they trigger as `PAPER_ONLY`.
+
+---
+
 ## 4. Grading System
 
 ### 4.1 `compute_grade_hybrid()` (Consolidation Scanner)

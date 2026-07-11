@@ -37,7 +37,7 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 # Keep this in sync with streamlined_ipo_scanner.py SCANNER_VERSION.
 # Section 3 will flag any drift automatically.
-EXPECTED_VERSION = "3.3.0"
+EXPECTED_VERSION = "3.4.0"
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
