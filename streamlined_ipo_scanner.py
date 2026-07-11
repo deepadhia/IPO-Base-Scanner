@@ -3597,6 +3597,9 @@ def detect_scan(symbols, listing_map):
                     logger.error(f"Error evaluating capital allocation cap: {cap_e}")
                     portfolio_full = False
                     
+                # FORCE PAPER ONLY FOR CONSOLIDATION TRADES (v3.4.0 out-of-sample forward test)
+                portfolio_full = True
+                    
                 size_mult = REGIME_SIZE_MULT.get(_mr, 0.5)
 
                 row = {
