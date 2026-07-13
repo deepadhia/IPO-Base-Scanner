@@ -2862,7 +2862,7 @@ def detect_live_patterns(symbols, listing_map):
                     "score": score,
                     "stop_loss": round(stop, 2),
                     "target_price": round(target, 2),
-                    "status": "ACTIVE",
+                    "status": "PAPER_ONLY",
                     "next_day_open": None,
                     "exit_date": "",
                     "exit_price": 0,
@@ -3061,7 +3061,7 @@ def detect_live_patterns(symbols, listing_map):
                     "trailing_stop": round(stop, 2),
                     "pnl_pct": 0,
                     "days_held": 0,
-                    "status": "ACTIVE",
+                    "status": "PAPER_ONLY",
                     "next_day_open": None,
                     "version": SCANNER_VERSION,
                     "strategy_version": "3.3.0-consolidation",
@@ -3145,7 +3145,8 @@ def detect_live_patterns(symbols, listing_map):
                 else:
                     _winner_badge = ""
 
-                message = f"""🎯 <b>CONSOLIDATION BREAKOUT SIGNAL</b>{_winner_badge}
+                message = f"""⚠️ <b>[PORTFOLIO FULL - PAPER ONLY]</b>
+🎯 <b>CONSOLIDATION BREAKOUT SIGNAL</b>{_winner_badge}
 
 📊 Symbol: <b>{sym}</b>
 📋 Signal Type: <b>Consolidation-Based Breakout</b>
