@@ -192,8 +192,24 @@ def audit_db_integrity(positions_col, signals_col):
     try:
         from db import ipos_col, listing_data_col
         if ipos_col is not None and listing_data_col is not None:
-            all_ipos = list(ipos_col.find({}, {"symbol": 1, "_id": 0}))
-            ipo_symbols = {d["symbol"] for d in all_ipos if d.get("symbol")}
+            today_date = datetime.now().date()
+            all_ipos = list(ipos_col.find({}, {"symbol": 1, "listing_date": 1, "_id": 0}))
+            
+            # Only check IPOs whose listing date has passed (listing_date < today).
+            # Same-day or future listings cannot be backfilled until after market close EOD.
+            ipo_symbols = set()
+            for d in all_ipos:
+                sym = d.get("symbol")
+                if not sym: continue
+                ld = d.get("listing_date")
+                if ld:
+                    try:
+                        ld_date = pd.to_datetime(ld).date()
+                        if ld_date >= today_date:
+                            continue  # Skip same-day or future listings
+                    except Exception:
+                        pass
+                ipo_symbols.add(sym)
             
             all_listings = list(listing_data_col.find({}, {"symbol": 1, "_id": 0}))
             listing_symbols = {d["symbol"] for d in all_listings if d.get("symbol")}

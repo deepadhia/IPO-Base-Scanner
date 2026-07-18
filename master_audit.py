@@ -26,6 +26,7 @@ import argparse
 import re
 from datetime import datetime, timezone, timedelta
 from collections import Counter
+import pandas as pd
 
 from dotenv import load_dotenv
 from pymongo import MongoClient
@@ -238,8 +239,24 @@ def audit_database_integrity(db):
 
     # 1i. IPO symbols in 'ipos' collection missing from 'listing_data' collection
     try:
-        all_ipos = list(db.ipos.find({}, {"symbol": 1, "_id": 0}))
-        ipo_symbols = {d["symbol"] for d in all_ipos if d.get("symbol")}
+        today_date = datetime.now().date()
+        all_ipos = list(db.ipos.find({}, {"symbol": 1, "listing_date": 1, "_id": 0}))
+        
+        # Only check IPOs whose listing date has passed (listing_date < today).
+        # Same-day or future listings cannot be backfilled until after market close EOD.
+        ipo_symbols = set()
+        for d in all_ipos:
+            sym = d.get("symbol")
+            if not sym: continue
+            ld = d.get("listing_date")
+            if ld:
+                try:
+                    ld_date = pd.to_datetime(ld).date()
+                    if ld_date >= today_date:
+                        continue  # Skip same-day or future listings
+                except Exception:
+                    pass
+            ipo_symbols.add(sym)
         
         all_listings = list(db.listing_data.find({}, {"symbol": 1, "_id": 0}))
         listing_symbols = {d["symbol"] for d in all_listings if d.get("symbol")}
