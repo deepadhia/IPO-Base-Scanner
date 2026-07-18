@@ -4908,5 +4908,8 @@ if __name__ == "__main__":
         generate_daily_summary()
     elif args.mode == "heartbeat":
         heartbeat()
+    elif args.mode == "backtest":
+        from run_latest_rules_backtest import main as run_backtest_main
+        run_backtest_main()
     else:
         logger.info("Dry run complete (no writes or Telegram)")

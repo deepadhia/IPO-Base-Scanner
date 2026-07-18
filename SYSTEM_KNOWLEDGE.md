@@ -23,14 +23,15 @@ A **behaviour-driven IPO momentum qualification engine** for Indian equities (NS
 ```
 IPO-Base-Scanner/
 │
-├── streamlined_ipo_scanner.py       # MAIN: Consolidation breakout scanner (v3.3.0) — 4,704 lines
+├── streamlined_ipo_scanner.py       # MAIN: Consolidation breakout scanner (v3.4.0) — 4,900+ lines
 ├── listing_day_breakout_scanner.py  # Listing Day scanner (imports from main scanner) — 2,282 lines
 ├── hourly_breakout_scanner.py       # Intraday watchlist scanner
+├── run_latest_rules_backtest.py     # Production rules backtesting engine & strategy audit
 ├── db.py                            # MongoDB persistence layer — 694 lines
 ├── fetch.py                         # Data acquisition (Upstox + YFinance fallback)
 ├── utils.py                         # Shared utilities (Nifty fetch from Upstox)
 ├── master_audit.py                  # System integrity audit (4 sections)
-├── manage_db.py                     # Unified management CLI entrypoint
+├── manage_db.py                     # Unified management CLI entrypoint (supports: python manage_db.py backtest)
 │
 ├── core/                            # Immutable data models with Sector/Industry tracking
 │   ├── models.py
@@ -342,6 +343,29 @@ DEAD_MONEY_DAYS_CONSOL=21
 DEAD_MONEY_RUNUP_CONSOL=5.0
 DEAD_MONEY_DAYS_OTHER=30
 DEAD_MONEY_RUNUP_OTHER=5.0
+```
+
+### 7.5 Modular Strategy Backtesting Engine (v3.4.0)
+**Location:** `run_latest_rules_backtest.py` (CLI entrypoints: `python manage_db.py backtest` or `python streamlined_ipo_scanner.py backtest`).
+
+Simulates current v3.4.0 production rules across all 675 Mainboard IPO candle datasets in MongoDB to audit strategy health, trade frequency, profit factor, and exit reason distribution.
+
+**Supported CLI Toggles for Isolated Rule Testing:**
+```bash
+# Test without Volume Exhaustion Early Exit
+python run_latest_rules_backtest.py --disable-vol-exit
+
+# Test without 40-day Stagnant Guard
+python run_latest_rules_backtest.py --disable-stagnant-guard
+
+# Test without 20d/21d Patience Speed Gates
+python run_latest_rules_backtest.py --disable-speed-gates
+
+# Custom Trailing Activation PnL thresholds (IPO / Consolidation)
+python run_latest_rules_backtest.py --trail-pnl-ipo 5.0 --trail-pnl-consol 6.0
+
+# Custom Volume Ratio threshold
+python run_latest_rules_backtest.py --vol-ratio 0.35
 ```
 
 ---

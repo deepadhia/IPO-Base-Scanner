@@ -105,11 +105,14 @@ To prevent whipsaws during market transitions, Nifty-based regimes are stabilize
 * **Stabilization Rule:** A new market regime classification is only confirmed and applied if it persists for **3 consecutive trading days**.
 * **Effect:** This time-based filter reduces regime whipsaws in backtests from **72.0% to 7.9%**, establishing a highly stable filter context.
 
-### 5. Forward-Testing Execution Baseline (Limit Buy Order)
-All trade alerts now include a **Limit Buy Price** instruction:
-* **Limit Buy Price = Listing Day High × 1.035** (capped at 3.5% above listing high)
-* This sets a clear, bounded execution instruction that prevents chasing extended breakouts.
-* The Limit Buy price is displayed in every Telegram signal alert for both scanners.
+### 6. Modular Strategy Backtesting Engine (v3.4.0)
+The repository includes an integrated quantitative backtesting engine (`run_latest_rules_backtest.py`) that evaluates production strategy rules against all 675 Mainboard IPO candle histories in MongoDB:
+* **Commands:** `python manage_db.py backtest` or `python streamlined_ipo_scanner.py backtest`
+* **Modular CLI Flags:**
+  * `--disable-vol-exit`: Isolate and test performance without Volume Exhaustion.
+  * `--disable-stagnant-guard`: Test performance without the 40-day guard.
+  * `--disable-speed-gates`: Test performance without 20d/21d speed gates.
+  * `--trail-pnl-ipo FLOAT` & `--trail-pnl-consol FLOAT`: Test custom trailing activation thresholds.
 
 ---
 

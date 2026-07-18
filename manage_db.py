@@ -15,7 +15,7 @@ def run_script(script_name, args=None):
 
 def main():
     parser = argparse.ArgumentParser(description="IPO Scanner MongoDB Management Tool")
-    parser.add_argument("task", choices=["test", "backfill-all", "validate", "backup", "analyze", "quality", "recent"], 
+    parser.add_argument("task", choices=["test", "backfill-all", "validate", "backup", "analyze", "quality", "recent", "backtest"], 
                         help="Task to perform")
     parser.add_argument("--today", action="store_true", help="For validation: logs only for today")
     parser.add_argument("--days", type=int, default=3, help="For analysis/quality/recent: number of days")
@@ -50,6 +50,9 @@ def main():
         import os
         path = os.path.join("scratch", "check_recent_logs.py")
         run_script(path, ["--days", str(args.days), "--limit", str(args.limit)])
+
+    elif args.task == "backtest":
+        run_script("run_latest_rules_backtest.py")
 
 if __name__ == "__main__":
     main()
