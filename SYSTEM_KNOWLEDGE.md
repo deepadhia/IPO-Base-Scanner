@@ -284,15 +284,17 @@ Stored on every signal/position document as `position_size_weight`.
 - `PAPER_ONLY` signals are included in **strategy expectancy analytics** but excluded from **live capital P&L calculations**
 
 ### 7.2 Trailing Stop Update Logic
-**Location:** `stop_loss_update_scan()` at line 3883 — runs at **6:30 PM IST** daily.
+**Location:** `stop_loss_update_scan()` at line 3919 — runs at **6:30 PM IST** daily.
 
-- Trailing only starts when `pnl >= MIN_PNL_FOR_TRAIL` (default: **5%**)
+- Trailing starts when `pnl >= trail_threshold`:
+  - `MIN_PNL_FOR_TRAIL` (default: **4.0%**, lowered from 5% to eliminate the dead zone vs speed gates)
+  - `LISTING_BREAKOUT` grade threshold: **3.0%** (sits below the 4% speed gate)
 - New trailing = `current_price x (1 - stop_pct)` where `stop_pct` is grade-based
 - Trailing stop only moves **forward** (ratchet — never loosens)
 - Minimum improvement required = `entry_price x (MIN_TRAIL_MOVE_PCT / 100)` (default: **1%** of entry)
 
 ### 7.3 Exit Conditions (for ACTIVE positions)
-**Location:** `stop_loss_update_scan()` at lines 4135–4197.
+**Location:** `stop_loss_update_scan()` in `streamlined_ipo_scanner.py`.
 
 **Safety Guard:** Exit checking is suspended if the **Corporate Action Guard** detects an extreme single-day drop (>25% compared to the previous day's recorded price), preventing false triggers from stock splits, bonus share adjustments, or data errors.
 
@@ -312,7 +314,20 @@ current_price <= trailing_stop  →  exit_reason = "Stop Loss"
 
 **Winner Archetype Exempt:** `max_runup_pct >= 15.0%` ➔ standard patience stops are **never applied**.
 
-**Exit Trigger 3: Secondary Stagnant Position Guard (Global Portfolio Efficiency)**
+**Exit Trigger 3: Volume Exhaustion Early Exit (v3.4.0)**
+Exits flat, stagnant positions before day 40 if volume collapses relative to the post-entry baseline, freeing capital for fresh breakouts or re-entries:
+- **Condition:** `pnl` between **-3.0% and +5.0%**, `max_runup_pct < 8.0%`, `days_held >= min_days`.
+- **Minimum Days:** **15 trading days** for `LISTING_BREAKOUT`, **10 trading days** for Consolidation.
+- **Volume Ratio Threshold:** Recent 5-day average volume `< 45%` (`0.45`) of the 11-day post-entry baseline.
+- **Liquidity Floor:** Requires baseline volume $\ge 50,000$ shares/day (skips thin/illiquid stocks to avoid noise).
+- **Listing Day Exclusion:** Row 0 (entry/listing day) is excluded from baseline calculations to remove structurally inflated volume.
+
+```
+volume_ratio < 0.45 AND days_held >= min_days AND -3% <= pnl < 5% AND max_runup < 8%
+➔ exit_reason = "Volume Exhaustion - Dead volume (ratio: X.XX, pnl: +Y.Y%, days: N)"
+```
+
+**Exit Trigger 4: Secondary Stagnant Position Guard (Global Portfolio Efficiency)**
 Regardless of early peak runups or winner archetype status, if a position is held for **$\ge 40$ days** and its **current PnL is $< 10.0\%$**, it is exited to prevent capital lock-in:
 ```
 days_held >= 40 AND current_pnl < 10.0%  ➔  exit_reason = "Time Stop - Stagnant Position (40d)"
@@ -320,6 +335,7 @@ days_held >= 40 AND current_pnl < 10.0%  ➔  exit_reason = "Time Stop - Stagnan
 
 All thresholds configurable via `.env`:
 ```
+MIN_PNL_FOR_TRAIL=4.0
 DEAD_MONEY_DAYS_IPO=20
 DEAD_MONEY_RUNUP_IPO=4.0
 DEAD_MONEY_DAYS_CONSOL=21

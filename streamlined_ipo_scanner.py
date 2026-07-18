@@ -859,7 +859,7 @@ MIN_ENTRY_PRICE_RS    = get_env_float("MIN_ENTRY_PRICE_RS", 25.0)
 # - MIN_LIVE_GRADE: minimum grade allowed for LIVE signals (D < C < B < A < A+)
 MAX_ENTRY_ABOVE_BREAKOUT_PCT = get_env_float("MAX_ENTRY_ABOVE_BREAKOUT_PCT", 8.0)
 MIN_RISK_REWARD = get_env_float("MIN_RISK_REWARD", 1.3)
-MIN_PNL_FOR_TRAIL = get_env_float("MIN_PNL_FOR_TRAIL", 5.0)
+MIN_PNL_FOR_TRAIL = get_env_float("MIN_PNL_FOR_TRAIL", 4.0)  # Lowered from 5.0 → 4.0 to close dead zone vs IPO speed gate (4% runup threshold)
 MIN_TRAIL_MOVE_PCT = get_env_float("MIN_TRAIL_MOVE_PCT", 1.0)
 MIN_DAYS_BETWEEN_SIGNALS = get_env_int("MIN_DAYS_BETWEEN_SIGNALS", 10)
 MIN_LIVE_GRADE = os.getenv("MIN_LIVE_GRADE", "B") # 2026-07-05: raised from C → B; Grade C avg -2.64%, median -5.55% across 64-trade history
@@ -3683,7 +3683,8 @@ def detect_scan(symbols, listing_map):
                 total_score = min(10.0, tier_weight + volume_score + base_score + momentum_score)
 
                 # Write to daily log
-                metrics["metric_ipo_age"] = sanitize_metric(ipo_age_days) if 'ipo_age_days' in locals() else None
+                _ipo_age = locals().get("ipo_age_days")
+                metrics["metric_ipo_age"] = sanitize_metric(_ipo_age) if _ipo_age is not None else None
                 sig_doc = {
                     **metrics, 
                     "grade": grade, "entry": round(entry, 2), "stop": round(stop, 2),
@@ -3724,7 +3725,7 @@ def detect_scan(symbols, listing_map):
                     sym, grade, entry, stop, target, score, date_str,
                     consolidation_low=low, consolidation_high=high2, breakout_price=entry,
                     data_source=price_source_name, current_price=current_price_display, price_source=price_source_display,
-                    pattern_type=_pt if '_pt' in locals() else None, 
+                    pattern_type=locals().get("_pt"), 
                     market_regime=_mr if '_mr' in locals() else None,
                     listing_high=lhigh
                 )
@@ -3972,46 +3973,93 @@ def stop_loss_update_scan():
         return
     
     # Send pre-scan summary showing all positions that will be updated
-    pre_scan_msg = f"""🔄 <b>Stop-Loss Update Scan Starting</b>
+    # Separate real active and shadow-only positions for clearer alerts
+    real_active_mask = active_positions["status"].isin(["ACTIVE", "PAPER_ONLY"])
+    real_active = active_positions[real_active_mask]
+    shadow_only = active_positions[~real_active_mask]
 
-📊 <b>Active Positions to Update: {len(active_positions)}</b>
-
-"""
-    for idx, pos in active_positions.iterrows():
-        sym = pos["symbol"]
-        entry_price = pos["entry_price"]
-        current_price = pos.get("current_price", entry_price)
-        trailing_stop = pos.get("trailing_stop", pos.get("stop_loss", entry_price * 0.95))
-        grade = pos.get("grade", "N/A")
-        
-        # Calculate days held
-        try:
-            entry_date = pos["entry_date"]
-            if isinstance(entry_date, pd.Timestamp):
-                entry_date = entry_date.date()
-            elif hasattr(entry_date, 'date'):
-                entry_date = entry_date.date()
-            today_date = datetime.today().date()
-            days_held = (today_date - entry_date).days
-        except:
-            days_held = "N/A"
-        
-        # Calculate PnL
-        try:
-            pnl = ((current_price - entry_price) / entry_price * 100) if entry_price > 0 else 0
-            pnl_emoji = "📈" if pnl >= 0 else "📉"
-        except:
-            pnl = 0
-            pnl_emoji = "➡️"
-        
-        pre_scan_msg += f"""• <b>{sym}</b> ({grade})
+    pre_scan_msg = f"🔄 <b>Stop-Loss Update Scan Starting</b>\n\n"
+    
+    # 1. Real Active Positions
+    if not real_active.empty:
+        pre_scan_msg += f"📊 <b>Active Positions to Update: {len(real_active)}</b>\n\n"
+        for idx, pos in real_active.iterrows():
+            sym = pos["symbol"]
+            entry_price = pos["entry_price"]
+            current_price = pos.get("current_price", entry_price)
+            trailing_stop = pos.get("trailing_stop", pos.get("stop_loss", entry_price * 0.95))
+            grade = pos.get("grade", "N/A")
+            
+            # Calculate days held
+            try:
+                entry_date = pos["entry_date"]
+                if isinstance(entry_date, pd.Timestamp):
+                    entry_date = entry_date.date()
+                elif hasattr(entry_date, 'date'):
+                    entry_date = entry_date.date()
+                today_date = datetime.today().date()
+                days_held = (today_date - entry_date).days
+            except:
+                days_held = "N/A"
+            
+            # Calculate PnL
+            try:
+                pnl = ((current_price - entry_price) / entry_price * 100) if entry_price > 0 else 0
+                pnl_emoji = "📈" if pnl >= 0 else "📉"
+            except:
+                pnl = 0
+                pnl_emoji = "➡️"
+            
+            pre_scan_msg += f"""• <b>{sym}</b> ({grade})
   💰 Entry: ₹{entry_price:,.2f} | Current: ₹{current_price:,.2f}
   {pnl_emoji} P&L: {pnl:+.2f}% | 🛑 Stop: ₹{trailing_stop:,.2f}
-  📅 Days: {days_held}
+  📅 Days: {days_held}\n\n"""
+    else:
+        pre_scan_msg += "📊 <b>Active Positions to Update: 0</b>\n\n"
 
-"""
-    
-    pre_scan_msg += f"\n⏰ <b>Scan Time:</b> {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    # 2. Shadow-Only Tracking Positions
+    if not shadow_only.empty:
+        pre_scan_msg += f"👥 <b>Shadow-Only Tracking (Closed): {len(shadow_only)}</b>\n\n"
+        for idx, pos in shadow_only.iterrows():
+            sym = pos["symbol"]
+            entry_price = pos["entry_price"]
+            current_price = pos.get("current_price", entry_price)
+            grade = pos.get("grade", "N/A")
+            
+            # Identify active shadow levels
+            active_shadows = []
+            if pos.get("shadow_status_8pct") == "ACTIVE":
+                active_shadows.append(f"8% (₹{pos.get('shadow_sl_8pct', 0.0):,.2f})")
+            if pos.get("shadow_status_10pct") == "ACTIVE":
+                active_shadows.append(f"10% (₹{pos.get('shadow_sl_10pct', 0.0):,.2f})")
+            if pos.get("shadow_status_12pct") == "ACTIVE":
+                active_shadows.append(f"12% (₹{pos.get('shadow_sl_12pct', 0.0):,.2f})")
+            shadows_str = ", ".join(active_shadows)
+            
+            try:
+                entry_date = pos["entry_date"]
+                if isinstance(entry_date, pd.Timestamp):
+                    entry_date = entry_date.date()
+                elif hasattr(entry_date, 'date'):
+                    entry_date = entry_date.date()
+                today_date = datetime.today().date()
+                days_held = (today_date - entry_date).days
+            except:
+                days_held = "N/A"
+                
+            try:
+                pnl = ((current_price - entry_price) / entry_price * 100) if entry_price > 0 else 0
+                pnl_emoji = "📈" if pnl >= 0 else "📉"
+            except:
+                pnl = 0
+                pnl_emoji = "➡️"
+                
+            pre_scan_msg += f"""• <b>{sym}</b> ({grade}) [CLOSED]
+  💰 Entry: ₹{entry_price:,.2f} | Last Close: ₹{current_price:,.2f}
+  {pnl_emoji} Close P&L: {pnl:+.2f}% | 📅 Total Days: {days_held}
+  👥 Tracking: {shadows_str}\n\n"""
+
+    pre_scan_msg += f"⏰ <b>Scan Time:</b> {datetime.now().strftime('%Y-%m-%d %H:%M')}"
     send_telegram(pre_scan_msg)
     
     updates_made = 0
@@ -4022,6 +4070,7 @@ def stop_loss_update_scan():
         sym = pos["symbol"]
         
         # Calculate days held first to skip 0-day positions
+        days_held = 0
         try:
             entry_date = pos["entry_date"]
             if isinstance(entry_date, pd.Timestamp):
@@ -4188,6 +4237,11 @@ def stop_loss_update_scan():
             new_max_runup = max(current_max_runup, pnl)
             new_max_drawdown = min(current_max_drawdown, pnl)
             
+            # Persist fresh metrics globally to the row (applies to both active and shadow-only positions)
+            df_positions.loc[idx, ["current_price", "pnl_pct", "days_held", "max_runup_pct", "max_drawdown_pct"]] = [
+                current_price, pnl, days_held, new_max_runup, new_max_drawdown
+            ]
+            
             # Check for exits - use current price for exit decisions
             exit_reason = None
             new_trailing = float(old_trailing)
@@ -4222,6 +4276,89 @@ def stop_loss_update_scan():
                 if not exit_reason and days_held >= 40:
                     if pnl < 10.0:
                         exit_reason = f"Time Stop - Stagnant Position (40d underperforming < 10% PnL)"
+
+                # --- VOLUME EXHAUSTION EARLY EXIT ---
+                # Exits stagnant flat positions BEFORE day 40 when volume is collapsing relative
+                # to the post-entry baseline, signalling the breakout has exhausted buyer interest.
+                # Only applies to flat/never-moved positions. Skips winners (max_runup >= 8%),
+                # positions already marked for exit, and positions held < minimum days.
+                #
+                # Thresholds are intentionally conservative:
+                #   - Post-entry analysis only (excludes listing-day inflated volume from baseline)
+                #   - Liquidity floor: skip check on thin stocks (noisy signal)
+                #   - Grade-aware min days: LISTING_BREAKOUT needs 15d for post-listing
+                #     excitement to settle; consolidation uses 10d
+                _VOL_MIN_DAYS_IPO    = 15     # LISTING_BREAKOUT: post-listing excitement settles ~2 weeks
+                _VOL_MIN_DAYS_CONSOL = 10     # Consolidation breakout: signal visible earlier
+                _VOL_FLAT_PNL_LOW    = -3.0   # Don't apply if significantly underwater (let SL handle it)
+                _VOL_FLAT_PNL_HIGH   =  5.0   # Don't apply to working trades (trailing stop protects them)
+                _VOL_MAX_RUNUP       =  8.0   # Skip if position had meaningful momentum at any point
+                _VOL_RATIO_THRESHOLD =  0.45  # Exit if recent 5d vol < 45% of post-entry 11d baseline
+                _VOL_ABS_FLOOR       = 50_000 # Min baseline vol (shares/day) — below this, signal is noise
+
+                _vol_grade = pos.get("grade", "N/A")  # Re-read grade safely (may be out of scope if winner)
+                _vol_min_days = _VOL_MIN_DAYS_IPO if _vol_grade == "LISTING_BREAKOUT" else _VOL_MIN_DAYS_CONSOL
+
+                if (
+                    not exit_reason
+                    and days_held >= _vol_min_days
+                    and _VOL_FLAT_PNL_LOW <= pnl < _VOL_FLAT_PNL_HIGH
+                    and new_max_runup < _VOL_MAX_RUNUP
+                ):
+                    try:
+                        # Reuse current_data if it was already fetched (historical close fallback path).
+                        # Otherwise fetch fresh OHLCV data for volume analysis.
+                        _vol_df = current_data if current_data is not None else fetch_data(sym, fetch_start_date)
+
+                        if _vol_df is not None and "VOLUME" in _vol_df.columns and len(_vol_df) > 0:
+                            # Anchor analysis to POST-ENTRY rows only (filter by entry/fetch_start_date).
+                            # This prevents pre-entry and IPO-listing history from contaminating the baseline.
+                            _entry_ts = pd.Timestamp(fetch_start_date)
+                            _entry_rows = _vol_df[_vol_df["DATE"] >= _entry_ts].copy().reset_index(drop=True)
+
+                            # Skip row 0 (entry/listing day): structurally inflated volume
+                            # (allottee selling, retail frenzy, media attention) makes it
+                            # unrepresentative of the ongoing organic volume pattern.
+                            if len(_entry_rows) > 1:
+                                _entry_rows = _entry_rows.iloc[1:].reset_index(drop=True)
+
+                            # Require at least 16 post-entry rows (11 baseline + 5 recent)
+                            # to have a stable signal.
+                            if len(_entry_rows) >= 16:
+                                _baseline_vol = _entry_rows.iloc[:11]["VOLUME"].mean()   # days 1-11
+                                _recent_vol   = _entry_rows.iloc[-5:]["VOLUME"].mean()   # last 5 days
+
+                                logger.debug(
+                                    f"[VolumeCheck] {sym}: post_entry_rows={len(_entry_rows)}, "
+                                    f"baseline={_baseline_vol:.0f}, recent={_recent_vol:.0f}, "
+                                    f"pnl={pnl:.1f}%, runup={new_max_runup:.1f}%, days={days_held}"
+                                )
+
+                                if _baseline_vol >= _VOL_ABS_FLOOR and _baseline_vol > 0:
+                                    _vol_ratio = _recent_vol / _baseline_vol
+                                    logger.info(
+                                        f"[VolumeCheck] {sym}: vol_ratio={_vol_ratio:.2f} "
+                                        f"(threshold={_VOL_RATIO_THRESHOLD})"
+                                    )
+                                    if _vol_ratio < _VOL_RATIO_THRESHOLD:
+                                        exit_reason = (
+                                            f"Volume Exhaustion - Dead volume "
+                                            f"(ratio: {_vol_ratio:.2f}, "
+                                            f"pnl: {pnl:+.1f}%, days: {days_held})"
+                                        )
+                                else:
+                                    logger.debug(
+                                        f"[VolumeCheck] {sym}: baseline {_baseline_vol:.0f} < "
+                                        f"floor {_VOL_ABS_FLOOR} — skipping (thin/illiquid stock)"
+                                    )
+                            else:
+                                logger.debug(
+                                    f"[VolumeCheck] {sym}: insufficient post-entry rows "
+                                    f"({len(_entry_rows)}) — need 16"
+                                )
+                    except Exception as _ve:
+                        # Soft signal — never blocks position management or loop continuation
+                        logger.warning(f"[VolumeCheck] Could not evaluate volume for {sym}: {_ve}")
 
                 if exit_reason:
                     # Outcome Classification
@@ -4304,10 +4441,14 @@ def stop_loss_update_scan():
                         logger.error(f"Failed to persist position exit for {sym}: {db_e}")
                 else:
                     # Update position and (optionally) trail stop-loss
-                    # Only start trailing once we have a reasonable profit cushion
-                    if pnl >= MIN_PNL_FOR_TRAIL:
+                    # Only start trailing once we have a reasonable profit cushion.
+                    # Grade-aware threshold: LISTING_BREAKOUT gets a tighter 3% gate (below
+                    # the 4% speed gate) so there is never a dead zone where the position
+                    # passed the speed gate but has zero trailing protection.
+                    grade = pos.get("grade", "C")  # Default to C if grade not available
+                    trail_threshold = 3.0 if grade == "LISTING_BREAKOUT" else MIN_PNL_FOR_TRAIL
+                    if pnl >= trail_threshold:
                         # Calculate new candidate trailing stop from grade-based percentage
-                        grade = pos.get("grade", "C")  # Default to C if grade not available
                         _, stop_pct = calculate_grade_based_stop_loss(entry_price, entry_price, grade)
 
                         candidate_trailing = current_price * (1 - stop_pct)
@@ -4601,7 +4742,10 @@ def stop_loss_update_scan():
 ✅ Positions Updated: {updates_made}
 🚪 Positions Closed: {exits_triggered}
 ⚠️ Failed Updates: {len(failed_updates)}
-📈 Active Positions: {len(active_positions) - exits_triggered}"""
+📈 Active Positions: {len(real_active) - exits_triggered}"""
+    
+    if not shadow_only.empty:
+        summary_msg += f"\n👥 Shadow-Only Active: {len(shadow_only)}"
     
     if failed_updates:
         summary_msg += f"\n\n❌ <b>Failed Symbols:</b> {', '.join(failed_updates)}"

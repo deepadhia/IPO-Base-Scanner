@@ -80,17 +80,20 @@ Market regimes (`BULL`, `WEAK_BULL`, `CORRECTION`, `RANGE`) are used purely as *
   * `BULL`: `1.0x` | `WEAK_BULL`: `0.75x` | `CORRECTION`: `0.5x` | `RANGE`: `0.5x`
 * The sizing weight is saved in the signal/position document (`position_size_weight`) and broadcasted in Telegram alerts (e.g. `⚖️ Regime Size Weight: 0.50x`).
 
-### 3. Archetype-Sensitive Dead-Money Speed Gate (v3.3.0 — 20-Day Patience Stop)
+### 3. Archetype-Sensitive Dead-Money Speed Gate & Volume Exhaustion (v3.4.0)
 
-Research across the 2024–2026 Mainboard IPO universe confirmed that the previous 12-day time stop was cutting 84% of non-broken setups too early. The gate now uses a **20-day patience stop**:
+Research across the 2024–2026 Mainboard IPO universe confirmed that patience is required for breakouts, but dead money should be recycled efficiently:
 
 * **IPO Discovery Breakouts (`grade == "LISTING_BREAKOUT"`):** If held for **≥ 20 trading days** and peak runup has never reached **≥ 4%**, it is closed at the market with exit reason `"Time Stop - IPO Dead Money"`.
 * **Consolidation Breakouts:** If held for **≥ 21 trading days** and peak runup has never reached **≥ 5%**, it is closed at the market with exit reason `"Time Stop - Consolidation Dead Money"`.
-* **Winner Archetype Exempt:** Positions where `max_runup_pct ≥ 15%` are treated as confirmed momentum trades and are never cut by the standard patience stop.
+* **Winner Archetype Exempt:** Positions where `max_runup_pct ≥ 15%` are treated as confirmed momentum trades and are never cut by standard patience stops.
+* **Volume Exhaustion Early Exit (v3.4.0):** Exits flat, stagnant positions (`-3% <= PnL < +5%`, `max_runup < 8%`) before day 40 if the 5-day average volume drops `< 45%` relative to the 11-day post-entry baseline (excluding Day 0 listing/entry volume and requiring baseline turnover `≥ 50,000` shares/day).
 * **Secondary Stagnant Position Guard (v3.3.0):** Regardless of early peak runups or winner archetype status, if any position is held for **≥ 40 days** and its **current PnL is < 10%**, it is closed with the exit reason `"Time Stop - Stagnant Position (40d underperforming < 10% PnL)"` to prevent capital lock-in.
+* **Trailing Stop Activation (v3.4.0):** Trailing starts at **4.0% PnL** (lowered from 5.0% to close the gap with the speed gate) and **3.0% PnL** specifically for `LISTING_BREAKOUT` trades.
 
 All thresholds are configurable via environment variables:
 ```
+MIN_PNL_FOR_TRAIL=4.0
 DEAD_MONEY_DAYS_IPO=20
 DEAD_MONEY_RUNUP_IPO=4.0
 DEAD_MONEY_DAYS_CONSOL=21
