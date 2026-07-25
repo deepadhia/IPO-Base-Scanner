@@ -254,3 +254,15 @@ listing_pending_breakouts.json
 cloudflare-dispatcher/node_modules/
 cloudflare-dispatcher/.wrangler/
 cloudflare-dispatcher/.dev.vars
+
+# Local MongoDB backups (JSON snapshots written by mongodb_backup.py)
+backups/
+
+# Graphify knowledge graph — fully generated, can be rebuilt via `graphify`
+graphify-out/
+
+# Generated chart artefacts
+base_audit_charts/
+
+# Large scratch cache files
+scratch_ohlc_cache.pkl

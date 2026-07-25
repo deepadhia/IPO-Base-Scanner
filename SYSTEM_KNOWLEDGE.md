@@ -1,7 +1,7 @@
 # IPO Breakout Qualification Engine — System Knowledge Map
 
-> **Version:** v3.3.0
-> **Last Updated:** 2026-07-05
+> **Version:** v3.4.0
+> **Last Updated:** 2026-07-21
 > **Purpose:** Permanent reference document. Attach this file to any AI conversation before asking questions or requesting changes to this codebase.
 
 ---
@@ -82,7 +82,7 @@ IPO-Base-Scanner/
 
 **Target:** IPOs **10–200 days post-listing** that have built a proper base and are breaking out.
 
-**Scan windows:** `10, 20, 30, 60, 90, 120` days (configurable via `CONSOL_WINDOWS`)
+**Scan windows:** `10, 20` days (configurable via `CONSOL_WINDOWS`; narrowed 2026-07-05)
 
 **The filter waterfall (in execution order):**
 
@@ -121,7 +121,9 @@ IPO-Base-Scanner/
 - Breakout Volume Floor: IPOs with < 150,000 breakout-day shares are rejected (Day 0 / actual listing day is exempt — volume may not be settled in DB yet)
 - Base Duration Floor: requires >= 3 trading days of post-listing history
 - Stop Loss: 15-day local swing low, buffered by 3%, **hard-capped at 12% max risk**
-- Observation State: Fresh symbols (< 5 days old) entering breakout levels go into `PENDING` state for 60 minutes to verify EOD close confirmation
+- Observation State: IPOs **≥ 5 days** old entering breakout levels during market hours go into `PENDING` for 60 minutes. IPOs **< 5 days** old are downgraded to `WATCHLIST` (alert only).
+- Tier B (Base Breakout): stocks **5–20% below** listing high that break a tight local base qualify as `BASE_BREAKOUT` (40% size) without crossing listing high first
+- Watchlist proximity (strict mode): **3–5% below** listing high (not 0–5%)
 - Volume floor: avg daily turnover < Rs 1.0 Cr or >= 3 circuit days in 15 sessions → rejected
 - Limit Buy Price instruction: `Listing Day High x 1.035` (capped at 3.5% above listing high)
 - Grading uses a **Tier** system (A+/B/C) rather than the consolidation scanner's `Grade`
@@ -596,7 +598,7 @@ All constants use `get_env_int()` / `get_env_float()` helpers with hardcoded def
 | `VOL_MULT` | 1.2 | Rolling volume multiplier threshold |
 | `ABS_VOL_MIN` | 3,000,000 | Absolute volume minimum |
 | `MAX_DAYS` | 200 | Max days post-listing to scan |
-| `LISTING_MAX_DAYS_SINCE_LISTING` | 750 | Max IPO age for listing-day scanner |
+| `LISTING_MAX_DAYS_SINCE_LISTING` | 730 | Max IPO age for listing-day scanner |
 | `MIN_AGE_DAYS` | 60 | Min post-listing age before consolidation scan |
 | `MIN_DAILY_TURNOVER_CR` | 1.0 | Min daily turnover in Crore |
 | `MIN_DAILY_TURNOVER_SMALL_CAP_CR` | 0.75 | Small-cap turnover floor |
@@ -606,7 +608,7 @@ All constants use `get_env_int()` / `get_env_float()` helpers with hardcoded def
 | `MIN_ENTRY_PRICE_RS` | 25.0 | Min entry price in Rs |
 | `MAX_ENTRY_ABOVE_BREAKOUT_PCT` | 8.0 | Max % above breakout to accept entry |
 | `MIN_RISK_REWARD` | 1.3 | Min risk:reward ratio |
-| `MIN_PNL_FOR_TRAIL` | 5.0 | Min P&L % before trailing starts |
+| `MIN_PNL_FOR_TRAIL` | 4.0 | Min P&L % before trailing starts (3.0% for `LISTING_BREAKOUT`) |
 | `MIN_TRAIL_MOVE_PCT` | 1.0 | Min % improvement to count as a trail update |
 | `MIN_DAYS_BETWEEN_SIGNALS` | 10 | Signal cooldown per symbol |
 | `MIN_LIVE_GRADE` | B | Minimum grade for live signal emission |
@@ -673,6 +675,7 @@ Runs at 11 PM IST:
 
 | Version | Date | Key Changes |
 |---|---|---|
+| **v3.4.0** | 2026-07-18 | Re-entry breakouts (`peak_price_during_trade`), volume exhaustion exit, trailing dead-zone closure (`MIN_PNL_FOR_TRAIL` 4%), Tier B base breakouts, doc/workflow parameter alignment |
 | **v3.3.0** | 2026-06-07 | Listing volume floor (>=150k shares), base-duration floor (>=3d), 20-day patience stop, Limit Buy alerts, `position_version` log field for cohort separation |
 | **v3.3.0** *(param update)* | 2026-07-05 | `CONSOL_WINDOWS` narrowed to `10,20` only (40/80/120d avg -7.65% across 64-trade history); `MIN_LIVE_GRADE` raised from `C` to `B` (Grade C avg -2.64%, median -5.55%) |
 | **v2.5.0** | 2026-04-23 | MongoDB-only architecture, winner trait classification, forensic audit mode, master_audit.py |

@@ -119,7 +119,7 @@ jobs:
           PT_A_PLUS: ${{ vars.PT_A_PLUS || '0.15' }}
           PT_B: ${{ vars.PT_B || '0.12' }}
           PT_C: ${{ vars.PT_C || '0.10' }}
-          CONSOL_WINDOWS: ${{ vars.CONSOL_WINDOWS || '10,20,40,80,120' }}
+          CONSOL_WINDOWS: ${{ vars.CONSOL_WINDOWS || '10,20' }}
           VOL_MULT: ${{ vars.VOL_MULT || '1.2' }}
           ABS_VOL_MIN: ${{ vars.ABS_VOL_MIN || '3000000' }}
           LOOKAHEAD: ${{ vars.LOOKAHEAD || '80' }}
@@ -175,7 +175,7 @@ jobs:
           PT_A_PLUS: ${{ vars.PT_A_PLUS || '0.15' }}
           PT_B: ${{ vars.PT_B || '0.12' }}
           PT_C: ${{ vars.PT_C || '0.10' }}
-          CONSOL_WINDOWS: ${{ vars.CONSOL_WINDOWS || '10,20,40,80,120' }}
+          CONSOL_WINDOWS: ${{ vars.CONSOL_WINDOWS || '10,20' }}
           VOL_MULT: ${{ vars.VOL_MULT || '1.2' }}
           ABS_VOL_MIN: ${{ vars.ABS_VOL_MIN || '3000000' }}
           LOOKAHEAD: ${{ vars.LOOKAHEAD || '80' }}

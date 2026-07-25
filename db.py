@@ -220,11 +220,33 @@ def upsert_position(position_doc: dict):
     position_doc["updated_at"] = datetime.now(timezone.utc)
     
     try:
-        positions_col.update_one(
-            {"symbol": symbol},
-            {"$set": position_doc},
-            upsert=True
-        )
+        status = position_doc.get("status", "")
+        if status in ("ACTIVE", "PAPER_ONLY"):
+            # When opening or re-opening a position we must atomically set the new
+            # entry fields AND remove any stale exit-cycle fields left over from a
+            # prior closed trade on the same symbol.  Using an aggregation-pipeline
+            # update guarantees both operations happen in a single round-trip.
+            positions_col.update_one(
+                {"symbol": symbol},
+                [
+                    {"$set": position_doc},
+                    {"$unset": [
+                        "exit_date", "exit_price", "pnl_pct", "days_held",
+                        "outcome_type", "holding_efficiency_pct",
+                        "time_to_failure_days", "time_to_failure_min",
+                        "max_runup_pct", "max_drawdown_pct",
+                    ]},
+                ],
+                upsert=True
+            )
+        else:
+            # For CLOSED / PAPER_CLOSED and any other status, retain the existing
+            # $set-only behaviour — exit fields are intentionally present here.
+            positions_col.update_one(
+                {"symbol": symbol},
+                {"$set": position_doc},
+                upsert=True
+            )
         increment_metric("db_inserts")
     except Exception as e:
         logger.error(f"Failed to upsert position for {symbol} into MongoDB: {e}")

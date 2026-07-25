@@ -832,7 +832,7 @@ LOOKAHEAD = get_env_int("LOOKAHEAD", 80)
 MAX_DAYS = get_env_int("MAX_DAYS", 200)
 
 # Institutional Universe Logic
-LISTING_MAX_DAYS_SINCE_LISTING = get_env_int("LISTING_MAX_DAYS_SINCE_LISTING", 750)
+LISTING_MAX_DAYS_SINCE_LISTING = get_env_int("LISTING_MAX_DAYS_SINCE_LISTING", 730)
 MIN_AGE_DAYS = get_env_int("MIN_AGE_DAYS", 60)
 
 # --- Phase 4: Institutional Liquidity Hardening (Phase 2.5) ---
@@ -930,7 +930,7 @@ def check_config_drift():
     """Warn if .env overrides are significantly diverging from institutional baselines."""
     recommendations = {
         "IPO_YEARS_BACK": (3, "Too short lookback blinds scanner to mature Stage-2 bases."),
-        "LISTING_MAX_DAYS_SINCE_LISTING": (750, "Tight age filters kill institutional accumulation detection."),
+        "LISTING_MAX_DAYS_SINCE_LISTING": (730, "Tight age filters kill institutional accumulation detection."),
         "MIN_AGE_DAYS": (60, "Scanning ultra-fresh IPOs (<60d) risks being trapped in post-listing distribution.")
     }
     

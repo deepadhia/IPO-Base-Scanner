@@ -506,10 +506,10 @@ def _assign_breakout_tier(
     Returns (None, None, reason) when no tier qualifies — caller must reject.
 
     Tier rules (mutually exclusive, evaluated top-down):
-        A+          → perfect base + listing-high breakout + vol ≥ 1.8× + age ≤ 60d  → 100%
-        A           → pure momentum, vol ≥ 2.0×, age ≤ 45d, NOT perfect base         → 60%
-        B           → BASE_BREAKOUT type only                                          → 40%
-        Fallback A  → vol ≥ 1.8×, age ≤ 75d (controlled edge-extender)               → 50%
+        A+          → perfect base + listing-high breakout + vol ≥ 1.8× + age ≤ 730d → 100%
+        A           → pure momentum, vol ≥ 2.0×, age ≤ 730d, NOT perfect base          → 60%
+        B           → BASE_BREAKOUT type only (≤20% below listing high)               → 40%
+        Fallback A  → vol ≥ 1.8×, age ≤ 730d (controlled edge-extender)              → 50%
         Reject      → anything else, or unconfirmed, or post-confirm move too small
 
     WATCHLIST is never a trade: returns (None, None, ...) always.
@@ -1319,8 +1319,8 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None, bul
             listing_range = listing_day_high - listing_day_low
             listing_range_pct = (listing_range / listing_day_high * 100) if listing_day_high > 0 else 0
             
-            # Note: Listing day range is not used for rejection - listing day low is last support level
-            # Stop loss is purely percentage-based (8% below entry), not based on listing day low
+            # Note: Listing day range is used for target sizing only — not for stop placement.
+            # Stop loss is computed from 15-day swing low (buffered 3%), 12% risk cap, 8% fallback.
             
             # Calculate how far above listing high the entry is
             entry_above_high = entry_price - listing_day_high

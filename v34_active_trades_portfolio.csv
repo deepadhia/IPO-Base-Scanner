@@ -1,0 +1,12 @@
+Symbol,Signal Type / Grade,Entry Date,Entry Price (Rs),Current Price (Rs),Initial Stop Loss (Rs),Trailing Stop (Rs),Target Price (Rs),Current PnL (%),Max Peak Runup (%),Days Held,Entry Thesis & Volume Details
+ALGOQUANT,Base Breakout (Grade B),2026-07-16,65.12,64.55,58.61,58.61,70.66,-0.88,4.25,1,Consolidation Base Breakout (N/Ad window) with 1.5x volume burst under CORRECTION regime.
+NIRLON,Listing Breakout,2026-04-19,560.0,622.0,516.03,583.16,700.0,11.07,15.71,88,IPO Discovery Breakout above Listing Day High. Proven demand post-listing with tight risk floor.
+ELPROINTL,Listing Breakout,2026-04-19,109.86,174.4,101.07,157.64,137.32,58.75,59.43,89,IPO Discovery Breakout above Listing Day High. Proven demand post-listing with tight risk floor.
+TIMEX,Listing Breakout,2026-04-14,337.95,534.0,312.0,519.08,422.44,58.01,71.61,93,IPO Discovery Breakout above Listing Day High. Proven demand post-listing with tight risk floor.
+LOTUSDEV,Base Breakout (Grade B),2026-06-15,143.03,139.95,128.73,137.09,178.79,-2.15,8.0,32,Consolidation Base Breakout (N/Ad window) with 1.5x volume burst under CORRECTION regime.
+VIKRAN,Base Breakout (Grade B),2026-06-29,76.83,72.13,69.15,69.15,96.04,-6.12,0.48,18,Consolidation Base Breakout (N/Ad window) with 1.5x volume burst under WEAK_BULL regime.
+PNGSREVA,Base Breakout (Grade B),2026-07-02,420.0,398.0,378.0,378.0,525.0,-5.24,1.4,15,Consolidation Base Breakout (N/Ad window) with 1.5x volume burst under WEAK_BULL regime.
+BLUESTONE,Base Breakout (Grade B),2026-07-06,593.7,599.05,534.33,563.67,742.12,0.9,9.9,11,Consolidation Base Breakout (N/Ad window) with 1.5x volume burst under BULL regime.
+STYL,Base Breakout (Grade B),2026-07-06,342.15,399.95,307.94,360.36,427.69,16.89,17.08,11,Consolidation Base Breakout (N/Ad window) with 1.3x volume burst under BULL regime.
+CRAMC,Base Breakout (Grade B),2026-07-13,265.2,258.85,238.68,238.68,331.5,-2.39,0.06,4,Consolidation Base Breakout (N/Ad window) with 1.5x volume burst under BULL regime.
+SAATVIKGL,Base Breakout (Grade B),2026-07-14,473.05,466.4,425.75,425.75,591.31,-1.41,0.0,3,Consolidation Base Breakout (N/Ad window) with 1.5x volume burst under BULL regime.
