@@ -222,10 +222,11 @@ def upsert_position(position_doc: dict):
     try:
         status = position_doc.get("status", "")
         if status in ("ACTIVE", "PAPER_ONLY"):
-            # When opening or re-opening a position we must atomically set the new
-            # entry fields AND remove any stale exit-cycle fields left over from a
-            # prior closed trade on the same symbol.  Using an aggregation-pipeline
-            # update guarantees both operations happen in a single round-trip.
+            # When opening or refreshing an open position we must atomically set the
+            # live fields AND remove any stale exit-cycle fields.  exit_reason is
+            # only valid on CLOSED / PAPER_CLOSED — never leave it sticky on open docs
+            # (shadow time-stops / prior closes were leaking into ACTIVE/PAPER_ONLY).
+            position_doc.pop("exit_reason", None)
             positions_col.update_one(
                 {"symbol": symbol},
                 [
@@ -235,18 +236,30 @@ def upsert_position(position_doc: dict):
                         "outcome_type", "holding_efficiency_pct",
                         "time_to_failure_days", "time_to_failure_min",
                         "max_runup_pct", "max_drawdown_pct",
+                        "exit_reason",
                     ]},
                 ],
                 upsert=True
             )
         else:
-            # For CLOSED / PAPER_CLOSED and any other status, retain the existing
-            # $set-only behaviour — exit fields are intentionally present here.
-            positions_col.update_one(
-                {"symbol": symbol},
-                {"$set": position_doc},
-                upsert=True
+            # CLOSED / PAPER_CLOSED: keep exit fields via $set.
+            # Partial refreshes (no status): clear sticky exit_reason unless this
+            # payload is explicitly closing (has exit_reason / exit_date).
+            is_close = status in ("CLOSED", "PAPER_CLOSED") or (
+                "exit_reason" in position_doc or "exit_date" in position_doc
             )
+            if is_close:
+                positions_col.update_one(
+                    {"symbol": symbol},
+                    {"$set": position_doc},
+                    upsert=True
+                )
+            else:
+                positions_col.update_one(
+                    {"symbol": symbol},
+                    {"$set": position_doc, "$unset": {"exit_reason": ""}},
+                    upsert=True
+                )
         increment_metric("db_inserts")
     except Exception as e:
         logger.error(f"Failed to upsert position for {symbol} into MongoDB: {e}")

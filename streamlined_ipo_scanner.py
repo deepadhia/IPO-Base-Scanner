@@ -4517,6 +4517,9 @@ def stop_loss_update_scan():
                                 pass # If v is an array, keep it
                             clean_pos[k] = v
                         clean_pos["exit_version"] = SCANNER_VERSION
+                        # Open positions must not carry exit_reason (set only on close).
+                        # Shadow reasons live in shadow_exit_reason_* fields only.
+                        clean_pos.pop("exit_reason", None)
                         upsert_position(clean_pos)
                     except Exception as db_e:
                         logger.error(f"Failed to persist position update for {sym}: {db_e}")
@@ -4715,6 +4718,9 @@ def stop_loss_update_scan():
                     except:
                         pass
                     clean_pos[k] = v
+                # Shadow exits must never leak into live exit_reason while still open.
+                if clean_pos.get("status") in ("ACTIVE", "PAPER_ONLY"):
+                    clean_pos.pop("exit_reason", None)
                 upsert_position(clean_pos)
             except Exception as db_e:
                 logger.error(f"Failed to persist final update for {sym}: {db_e}")

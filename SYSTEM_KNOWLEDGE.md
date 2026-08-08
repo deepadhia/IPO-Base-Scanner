@@ -336,6 +336,8 @@ Regardless of early peak runups or winner archetype status, if a position is hel
 days_held >= 40 AND current_pnl < 10.0%  ➔  exit_reason = "Time Stop - Stagnant Position (40d)"
 ```
 
+**`exit_reason` hygiene:** `exit_reason` is set **only on close** (`CLOSED` / `PAPER_CLOSED`). Open positions (`ACTIVE` / `PAPER_ONLY`) must not carry a non-null `exit_reason`; shadow time-stops use `shadow_exit_reason_*` fields only. `upsert_position` clears sticky `exit_reason` on open-status writes.
+
 All thresholds configurable via `.env`:
 ```
 MIN_PNL_FOR_TRAIL=4.0
