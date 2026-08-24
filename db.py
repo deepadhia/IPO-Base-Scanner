@@ -222,20 +222,19 @@ def upsert_position(position_doc: dict):
     try:
         status = position_doc.get("status", "")
         if status in ("ACTIVE", "PAPER_ONLY"):
-            # When opening or refreshing an open position we must atomically set the
-            # live fields AND remove any stale exit-cycle fields.  exit_reason is
-            # only valid on CLOSED / PAPER_CLOSED — never leave it sticky on open docs
-            # (shadow time-stops / prior closes were leaking into ACTIVE/PAPER_ONLY).
+            # Clear stale *exit-cycle* fields from a prior closed trade on reopen /
+            # refresh. Do NOT unset live open-book metrics (pnl_pct, days_held,
+            # max_runup_pct, max_drawdown_pct) — those are maintained daily and
+            # wiping them made weekly shadow-SL audits falsely CRITICAL every week.
             position_doc.pop("exit_reason", None)
             positions_col.update_one(
                 {"symbol": symbol},
                 [
                     {"$set": position_doc},
                     {"$unset": [
-                        "exit_date", "exit_price", "pnl_pct", "days_held",
+                        "exit_date", "exit_price",
                         "outcome_type", "holding_efficiency_pct",
                         "time_to_failure_days", "time_to_failure_min",
-                        "max_runup_pct", "max_drawdown_pct",
                         "exit_reason",
                     ]},
                 ],
@@ -282,6 +281,19 @@ def has_active_position(symbol: str) -> bool:
         return positions_col.count_documents({"symbol": symbol, "status": "ACTIVE"}, limit=1) > 0
     except Exception as e:
         logger.error(f"Failed has_active_position lookup for {symbol}: {e}")
+        return False
+
+def has_open_position(symbol: str) -> bool:
+    """Return True if the symbol has an open book row (ACTIVE or PAPER_ONLY)."""
+    if positions_col is None or not symbol:
+        return False
+    try:
+        return positions_col.count_documents(
+            {"symbol": symbol, "status": {"$in": ["ACTIVE", "PAPER_ONLY"]}},
+            limit=1,
+        ) > 0
+    except Exception as e:
+        logger.error(f"Failed has_open_position lookup for {symbol}: {e}")
         return False
 
 def get_last_signal_date(symbol: str):

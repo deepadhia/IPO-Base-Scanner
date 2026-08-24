@@ -328,15 +328,24 @@ def detect_intraday_breakout(df, symbol, bulk_prices=None):
         consolidation_low = consolidation_df['LOW'].min() if len(consolidation_df) > 0 else recent_low
         consolidation_high = consolidation_df['HIGH'].max() if len(consolidation_df) > 0 else recent_high
         
-        # Get historical data for volume/RSI calculations
-        current_volume = recent_df['VOLUME'].iloc[-1]
-        avg_volume = historical_df['VOLUME'].mean() if len(historical_df) > 0 else current_volume
+        # Volume confirmation must come from the *same* decision bar as price,
+        # not an older non-zero spike while live LTP only just crossed.
+        # recent_high is computed from historical_df (excludes last candle).
+        last_bar_volume = float(recent_df["VOLUME"].fillna(0).astype(float).iloc[-1])
+        last_bar_high = float(recent_df["HIGH"].iloc[-1])
+        hist_vols = historical_df["VOLUME"].fillna(0).astype(float) if len(historical_df) > 0 else recent_df["VOLUME"].fillna(0).astype(float)
+        hist_nonzero = hist_vols[hist_vols > 0]
+        avg_volume = float(hist_nonzero.mean()) if len(hist_nonzero) > 0 else 0.0
+        current_volume = last_bar_volume
+        volume_ratio = (current_volume / avg_volume) if avg_volume > 0 else 0.0
+        volume_ok = avg_volume > 0 and current_volume >= avg_volume * MIN_VOLUME_MULTIPLIER
         
         # CRITICAL: Get LIVE price for accurate breakout detection.
         live_price = None
         live_source = "Historical"
         if bulk_prices and symbol in bulk_prices:
-            live_price, _ = bulk_prices[symbol]
+            quote = bulk_prices[symbol]
+            live_price = quote[0] if hasattr(quote, "__getitem__") else getattr(quote, "close", None)
             live_source = "Upstox-Bulk"
             logger.info(f"✅ Using live price for {symbol} breakout detection: ₹{live_price:.2f} (Upstox-Bulk)")
         else:
@@ -359,8 +368,8 @@ def detect_intraday_breakout(df, symbol, bulk_prices=None):
         
         # Breakout conditions:
         # 1. Current price/high breaks above recent high (using LIVE price if available)
-        # 2. Volume spike (at least 1.5x average)
-        # 3. RSI momentum confirmation
+        # 2. Volume spike on the breakout bar (required — at least 1.5x average)
+        # 3. RSI momentum confirmation (optional strength point)
         is_breakout = False
         breakout_strength = 0
         
@@ -370,10 +379,26 @@ def detect_intraday_breakout(df, symbol, bulk_prices=None):
             breakout_strength += 1
             logger.info(f"🔥 {symbol}: Price broke above recent high! ({current_high:.2f} > {recent_high:.2f}) [Using: {live_source}]")
         
-        # Volume confirmation
-        if current_volume >= avg_volume * MIN_VOLUME_MULTIPLIER:
+        # If live LTP crossed but the last candle itself never broke the range,
+        # last-bar volume is not confirmation of *this* breakout — reject.
+        if is_breakout and volume_ok and last_bar_high <= recent_high:
+            logger.info(
+                f"⏭️ {symbol}: Live breakout without breakout-bar volume "
+                f"(last_bar_high={last_bar_high:.2f} <= recent_high={recent_high:.2f}, "
+                f"vol={current_volume:,.0f})"
+            )
+            volume_ok = False
+            volume_ratio = (current_volume / avg_volume) if avg_volume > 0 else 0.0
+
+        # Volume confirmation (mandatory for alert — price+RSI alone caused AZAD 0.0x alerts)
+        if volume_ok:
             breakout_strength += 1
-            logger.info(f"📊 {symbol}: Volume spike detected! ({current_volume:,.0f} vs avg {avg_volume:,.0f})")
+            logger.info(f"📊 {symbol}: Volume spike detected! ({current_volume:,.0f} vs avg {avg_volume:,.0f}, {volume_ratio:.2f}x)")
+        elif is_breakout:
+            logger.info(
+                f"⏭️ {symbol}: Price breakout without volume "
+                f"(vol={current_volume:,.0f}, avg={avg_volume:,.0f}, ratio={volume_ratio:.2f}x)"
+            )
         
         # Calculate RSI for momentum confirmation
         rsi = compute_rsi(recent_df['CLOSE'])
@@ -382,8 +407,26 @@ def detect_intraday_breakout(df, symbol, bulk_prices=None):
         if current_rsi > 60:  # Strong momentum
             breakout_strength += 1
         
-        # Only trigger if we have a clear breakout
-        if is_breakout and breakout_strength >= 2:
+        # Price broke but volume missing/insufficient — do not alert (AZAD-class false signals)
+        if is_breakout and not volume_ok:
+            return {
+                'rejected': True,
+                'reason': 'no_volume_confirmation',
+                'failing_metric': 'volume_ratio',
+                'failing_value': round(volume_ratio, 2),
+                'threshold': f'>={MIN_VOLUME_MULTIPLIER}x on breakout bar (no prior-bar volume borrow)',
+                'metrics': {
+                    'current_volume': round(current_volume, 0),
+                    'avg_volume': round(avg_volume, 0),
+                    'volume_ratio': round(volume_ratio, 2),
+                    'breakout_strength': breakout_strength,
+                    'rsi': round(float(current_rsi), 2) if current_rsi is not None else None,
+                },
+                'volume_ratio': round(volume_ratio, 2),
+            }
+
+        # Require price breakout + volume spike; RSI may add a 3rd strength point
+        if is_breakout and volume_ok and breakout_strength >= 2:
             # Guard: Reject flat / circuit-locked consolidation bases.
             # Placed INSIDE the breakout block so that symbols with no breakout
             # signal return None (not a rejected dict) and do not generate
@@ -403,7 +446,7 @@ def detect_intraday_breakout(df, symbol, bulk_prices=None):
                         'consolidation_high': round(consolidation_high, 2),
                         'consolidation_range': round(consolidation_range, 2),
                     },
-                    'volume_ratio': round(current_volume / avg_volume, 2) if avg_volume > 0 else 0.0
+                    'volume_ratio': round(volume_ratio, 2)
                 }
 
             # Entry price: Use LIVE price if available, otherwise current price
@@ -442,7 +485,7 @@ def detect_intraday_breakout(df, symbol, bulk_prices=None):
                         'entry_price': round(entry_price, 2),
                         'stop_loss': round(stop_loss, 2),
                     },
-                    'volume_ratio': round(current_volume / avg_volume, 2) if avg_volume > 0 else 0.0
+                    'volume_ratio': round(volume_ratio, 2)
                 }
                 
             risk_reward = reward / risk
@@ -464,7 +507,7 @@ def detect_intraday_breakout(df, symbol, bulk_prices=None):
                         'reward': round(reward, 2),
                         'risk_reward': round(risk_reward, 2),
                     },
-                    'volume_ratio': round(current_volume / avg_volume, 2) if avg_volume > 0 else 0.0
+                    'volume_ratio': round(volume_ratio, 2)
                 }
             
             logger.info(f"📊 {symbol} Breakout Levels:")
@@ -484,7 +527,7 @@ def detect_intraday_breakout(df, symbol, bulk_prices=None):
                 'recent_high': round(recent_high, 2),
                 'consolidation_low': round(consolidation_low, 2),
                 'consolidation_high': round(consolidation_high, 2),
-                'volume_spike': round(current_volume / avg_volume, 2),
+                'volume_spike': round(volume_ratio, 2),
                 'rsi': round(current_rsi, 2),
                 'risk_reward': round(risk_reward, 2),
                 'breakout_strength': breakout_strength,
@@ -494,7 +537,7 @@ def detect_intraday_breakout(df, symbol, bulk_prices=None):
                 'held_above_breakout_after_confirm': bool(current_price >= recent_high),
                 'signal_strength_score': round(float(breakout_strength) * 3.33, 2),
                 'tier_weight': None,
-                'volume_score': round(min(2.0, (current_volume / avg_volume) / 2.0), 2) if avg_volume > 0 else None,
+                'volume_score': round(min(2.0, volume_ratio / 2.0), 2) if avg_volume > 0 else None,
                 'base_score': 1.0,
                 'momentum_score': round(min(2.0, max(0.0, (current_rsi - 50.0) / 10.0)), 2) if current_rsi is not None else None,
                 'pattern_type': classify_pattern_type("INTRADAY", 30, breakout_strength/2.0, 10),
@@ -553,7 +596,7 @@ def format_intraday_alert(breakout_data):
     return msg
 
 def save_breakout_signal(breakout_data):
-    """Save breakout signal to CSV"""
+    """Save breakout signal to MongoDB. Never clobber an existing open IPO book row."""
     try:
         # Get actual candle timestamp for determinism — use market event time, not system time
         candle_ts = breakout_data.get('timestamp', datetime.now())
@@ -563,29 +606,84 @@ def save_breakout_signal(breakout_data):
         
         # signal_date tied to market candle date, not execution date
         signal_date = candle_ts.date() if hasattr(candle_ts, 'date') else datetime.now().date()
-        signal_id = f"INTRADAY_{breakout_data['symbol']}_{signal_date.strftime('%Y%m%d')}_{candle_time}"
+        symbol = breakout_data['symbol']
+        signal_id = f"INTRADAY_{symbol}_{signal_date.strftime('%Y%m%d')}_{candle_time}"
         
         # P1-5 Fix: Use signal_exists(signal_id) for deduplication — consistent with other
         # scanners and avoids cross-type collisions (e.g. WATCHLIST blocking INTRADAY).
         try:
             from db import signal_exists
             if signal_exists(signal_id):
-                logger.info(f"Signal already exists for {breakout_data['symbol']} today ({signal_id})")
+                logger.info(f"Signal already exists for {symbol} today ({signal_id})")
                 return False
         except Exception as e:
             logger.warning(f"Error checking MongoDB for existing signal: {e}")
+
+        # Book isolation: upsert_position keys on symbol only — never overwrite
+        # ACTIVE/PAPER_ONLY listing or consolidation rows with INTRADAY.
+        try:
+            from db import has_open_position
+            if has_open_position(symbol):
+                logger.warning(
+                    f"⏭️ Skipping INTRADAY position for {symbol} — open position already exists "
+                    f"(signal saved as ALERT_ONLY; position write blocked)"
+                )
+                new_signal = {
+                    "signal_id": signal_id,
+                    "symbol": symbol,
+                    "signal_date": signal_date.strftime('%Y-%m-%d') if hasattr(signal_date, 'strftime') else str(signal_date),
+                    "entry_price": breakout_data['entry_price'],
+                    "grade": "INTRADAY",
+                    "score": breakout_data['breakout_strength'] * 10,
+                    "stop_loss": breakout_data['stop_loss'],
+                    "target_price": breakout_data['target_price'],
+                    "status": "ALERT_ONLY",
+                    "exit_date": "",
+                    "exit_price": 0,
+                    "pnl_pct": 0,
+                    "days_held": 0,
+                    "signal_type": "INTRADAY",
+                    "scanner": "hourly_breakout_scanner",
+                    "skip_reason": "open_position_exists",
+                }
+                from db import upsert_signal
+                upsert_signal(new_signal.copy())
+                return True
+        except Exception as e:
+            logger.warning(f"Open-position guard failed for {symbol}: {e}")
+
+        # Portfolio caps (same soft/hard as IPO scanners) — hourly must not ignore the book.
+        soft_cap = getattr(scanner_module, 'MAX_ACTIVE_POSITIONS', 5)
+        hard_cap = getattr(scanner_module, 'HARD_ACTIVE_POSITIONS', soft_cap + 2)
+        active_count = 0
+        portfolio_full = False
+        try:
+            from db import positions_col
+            if positions_col is not None:
+                active_count = positions_col.count_documents({"status": "ACTIVE"})
+            if active_count >= soft_cap:
+                portfolio_full = True
+                logger.info(
+                    f"🔒 Hourly cap reached ({active_count} active; soft {soft_cap}/hard {hard_cap}) — "
+                    f"{symbol} saved as PAPER_ONLY"
+                )
+        except Exception as cap_e:
+            logger.warning(f"Hourly portfolio cap check failed for {symbol}: {cap_e}")
+            # Fail closed for capital: do not open uncapped ACTIVE on cap-check errors
+            portfolio_full = True
+
+        position_status = "PAPER_ONLY" if portfolio_full else "ACTIVE"
         
-        # Create new signal
         new_signal = {
             "signal_id": signal_id,
-            "symbol": breakout_data['symbol'],
+            "symbol": symbol,
             "signal_date": signal_date.strftime('%Y-%m-%d') if hasattr(signal_date, 'strftime') else str(signal_date),
             "entry_price": breakout_data['entry_price'],
             "grade": "INTRADAY",
             "score": breakout_data['breakout_strength'] * 10,
             "stop_loss": breakout_data['stop_loss'],
             "target_price": breakout_data['target_price'],
-            "status": "ACTIVE",
+            "status": position_status,
             "exit_date": "",
             "exit_price": 0,
             "pnl_pct": 0,
@@ -594,10 +692,9 @@ def save_breakout_signal(breakout_data):
             "scanner": "hourly_breakout_scanner"
         }
         
-        # Create new position
         new_position = {
             "signal_id": signal_id,
-            "symbol": breakout_data['symbol'],
+            "symbol": symbol,
             "entry_date": signal_date.strftime('%Y-%m-%d') if hasattr(signal_date, 'strftime') else str(signal_date),
             "entry_price": breakout_data['entry_price'],
             "grade": "INTRADAY",
@@ -606,7 +703,7 @@ def save_breakout_signal(breakout_data):
             "trailing_stop": breakout_data['stop_loss'],
             "pnl_pct": 0,
             "days_held": 0,
-            "status": "ACTIVE",
+            "status": position_status,
             "next_day_open": None,
             "version": SCANNER_VERSION,
             "strategy_version": SCANNER_VERSION,
@@ -615,7 +712,6 @@ def save_breakout_signal(breakout_data):
             "risk_model_version": "3.3.0-archetype-velocity",
         }
         
-        # MongoDB write: signal and position atomically
         try:
             from db import upsert_signal, upsert_position
             upsert_signal(new_signal.copy())
@@ -628,8 +724,11 @@ def save_breakout_signal(breakout_data):
             except Exception:
                 pass
             return False
-        
-        logger.info(f"✅ Saved breakout signal and position for {breakout_data['symbol']}")
+
+        logger.info(
+            f"✅ Saved INTRADAY {position_status} for {symbol} "
+            f"(active book {active_count}/soft {soft_cap}/hard {hard_cap})"
+        )
         return True
     
     except Exception as e:

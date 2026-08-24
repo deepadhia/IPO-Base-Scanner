@@ -33,8 +33,9 @@ Targets IPOs from listing day up to **730 calendar days (2 years)** post-listing
 3. **Base Duration Floor (v3.3.0):** Standard breakouts require at least **3 trading days** of post-listing history before the scanner qualifies a signal. Prevents false breakout reads from single-day listing spikes.
 4. **Stop Loss (15-Day Local Swing Low, 12% Risk Cap):** Dynamically calculates the stop loss based on the 15-day local swing low (buffered by 3%), capped at a tight maximum risk of **12%** to shield against large drawdowns.
 5. **Observation State:** During market hours, IPOs **≥ 5 days** old that break listing high enter a `PENDING` state for **60 minutes** to verify sustained hold. IPOs **< 5 days** old are downgraded to `WATCHLIST` (alert only) until they have more post-listing history.
-6. **Tier B (Base Breakout):** Stocks **5–20% below** listing high that break a tight local base can qualify as `BASE_BREAKOUT` (40% position size) without crossing listing high first.
+6. **Tier B (Base Breakout):** Stocks **5–20% below** listing high that break a tight local base can qualify as `BASE_BREAKOUT` (40% position size) without crossing listing high first. Under `LISTING_STRICT_QUALITY` (default on), Tier B requires the same **≥1.8×** Day-2+ average volume spike as full `BREAKOUT`.
 7. **Volume & Liquidity Floor:** Rejects signals with average daily turnover **< 1.0 Cr** or circuit days **≥ 3 in 15 sessions**.
+8. **Position grade:** Listing and re-entry capital positions are stored with `grade="LISTING_BREAKOUT"` so IPO dead-money, volume-exhaustion, and trail thresholds apply in `stop_loss_update_scan`.
 
 ---
 
@@ -52,28 +53,36 @@ Targets IPOs **10–200 days post-listing** that have built a proper base struct
 3. **Base Duration Floor (v3.3.0):** Consolidation window `w` must be `≥ 3` days. Prevents spuriously short base windows from generating signals.
 4. Consolidation range must be `≤60%` (tight base, not chop).
 5. Breakout candle must **close** above the base high (no wick fakes).
-6. Volume must confirm via one of: `2.5x avg burst`, `VOL_MULT (1.2x)` rolling, or absolute `3M+ value`.
+6. Volume must confirm via `VOL_MULT` rolling (**≥1.2×** avg). Absolute `ABS_VOL_MIN` alone is **not** enough for emission — the ALIGNED bucket also requires `vol_ratio >= 1.2`.
 7. Follow-through filter: next candle must hold base high ±2% **or** show 80%+ continuation volume.
-8. Grade and R:R checks filter further before signal emission.
+8. Grade must meet `MIN_LIVE_GRADE` (default **B**) and R:R / extension / hard 10% stop-risk checks before signal emission.
 
 ---
 
 ### 3. ⏱️ Watchlist Hourly Scanner (`hourly_breakout_scanner.py`)
 
 Monitors active watchlist symbols intraday and emits fast breakout alerts during market hours.
-It is a tactical alerting layer and writes structured JSONL logs to the same daily log path.
+It is primarily a **tactical alerting** layer (JSONL logs + Telegram).
+
+**Book safety (v3.4.0):**
+* Volume confirmation uses the **breakout bar** only (no prior-bar volume borrow when live LTP just crossed).
+* Never overwrites an existing `ACTIVE` / `PAPER_ONLY` position for the same symbol (`upsert_position` is symbol-keyed); conflict → signal saved as `ALERT_ONLY`.
+* Respects `MAX_ACTIVE_POSITIONS` soft cap (excess → `PAPER_ONLY`).
 
 ---
 
 ## 💼 Portfolio Allocation & Risk Control (v3.3.0)
 
 ### 1. Portfolio Caps & `PAPER_ONLY` Gating
-To protect live capital, the system enforces a strict **Portfolio Cap Guard** (configurable via environment variable `MAX_ACTIVE_POSITIONS`, defaults to `5` active trades):
-* **Cap Check:** Before executing a new active trade, the scanner counts active documents in MongoDB. If the count is $\ge \text{MAX\_ACTIVE\_POSITIONS}$:
-  * The breakout signal is saved in the `signals` collection with status `"PAPER_ONLY"`.
-  * The live position is **not** written to the `positions` collection.
-  * The Telegram notification is prefixed with **`⚠️ [PORTFOLIO FULL - PAPER ONLY]`**.
-* **Analytical Treatment:** `PAPER_ONLY` signals are included in raw strategy expectancy analytics (evaluating setups' raw predictive capacity) but are filtered out from live capital performance calculations (querying `status: {"$in": ["ACTIVE", "CLOSED"]}`).
+To protect live capital, scanners share a **Portfolio Cap Guard** (`MAX_ACTIVE_POSITIONS` soft default **5**, `HARD_ACTIVE_POSITIONS` default soft+2):
+* **Cap Check:** Before opening a new `ACTIVE` trade, the scanner counts `status: "ACTIVE"` in MongoDB.
+  * At/above soft cap (non-pristine): signal + position are written as `"PAPER_ONLY"`.
+  * At/above hard cap: always `"PAPER_ONLY"` (listing soft-cap bypass only applies between soft and hard).
+* **Consolidation (v3.4.0 OOS):** Forced `PAPER_ONLY` regardless of free slots (forward test).
+* **Listing / re-entry:** Can open `ACTIVE` when under cap; skips commit if symbol already has an `ACTIVE` row.
+* **Hourly:** Soft-cap → `PAPER_ONLY`; never overwrites an open book row.
+* **Analytical Treatment:** `PAPER_ONLY` is included in strategy expectancy analytics but filtered from live capital P&L (`status: {"$in": ["ACTIVE", "CLOSED"]}`).
+* Telegram may be prefixed with **`⚠️ [PORTFOLIO FULL - PAPER ONLY]`** when the paper path is taken.
 
 ### 2. Soft Regime-Based Sizing
 Market regimes (`BULL`, `WEAK_BULL`, `CORRECTION`, `RANGE`) are used purely as **soft position sizing and ranking inputs** instead of binary switches:
@@ -132,7 +141,7 @@ The system rejects aggressively. A setup is terminated at the first failing cond
 | Price outside `8%–35%` of listing high | Outside base formation range |
 | Consolidation range `>60%` | `loose_base` — chop, not accumulation |
 | Failed follow-through | `failed_follow_through` |
-| Grade below minimum (`C` by default) | `low_grade` |
+| Grade below minimum (`MIN_LIVE_GRADE`, default **B**) | `low_grade` |
 | Risk:Reward ratio `< 1.3` | `poor_risk_reward` |
 | Entry `>8%` above breakout level | `too_extended` |
 | Stop Loss `>10.0%` risk from entry | `excessive_stop_risk` |

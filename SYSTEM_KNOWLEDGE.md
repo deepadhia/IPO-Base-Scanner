@@ -100,7 +100,7 @@ IPO-Base-Scanner/
 | 10 | Daily turnover | >= Rs 1.0 Cr (small-cap floor: Rs 0.75 Cr) | `LIQUIDITY_TRAP` |
 | 11 | Market cap | >= Rs 500 Cr | `MICROCAP_PENALTY` |
 | 12 | Circuit days | < 3 circuit days in 15 sessions | `LIQUIDITY_TRAP_CIRCUITS` |
-| 13 | Grade minimum | Must meet MIN_LIVE_GRADE (default C) | `low_grade` |
+| 13 | Grade minimum | Must meet MIN_LIVE_GRADE (default **B**) | `low_grade` |
 | 14 | Risk:Reward | >= 1.3 (MIN_RISK_REWARD) | `poor_risk_reward` |
 | 15 | Entry vs. breakout | Entry not > 8% above breakout level | `too_extended` |
 | 16 | Stop loss risk | Stop not > 10% from entry | `excessive_stop_risk` |
@@ -122,7 +122,8 @@ IPO-Base-Scanner/
 - Base Duration Floor: requires >= 3 trading days of post-listing history
 - Stop Loss: 15-day local swing low, buffered by 3%, **hard-capped at 12% max risk**
 - Observation State: IPOs **≥ 5 days** old entering breakout levels during market hours go into `PENDING` for 60 minutes. IPOs **< 5 days** old are downgraded to `WATCHLIST` (alert only).
-- Tier B (Base Breakout): stocks **5–20% below** listing high that break a tight local base qualify as `BASE_BREAKOUT` (40% size) without crossing listing high first
+- Tier B (Base Breakout): stocks **5–20% below** listing high that break a tight local base qualify as `BASE_BREAKOUT` (40% size) without crossing listing high first; under strict quality, requires the same Day-2+ **≥1.8×** volume spike as `BREAKOUT`
+- Listing/re-entry positions persist `grade="LISTING_BREAKOUT"` (winner traits stay in `winner_label` / `winner_score`) so IPO exit gates apply
 - Watchlist proximity (strict mode): **3–5% below** listing high (not 0–5%)
 - Volume floor: avg daily turnover < Rs 1.0 Cr or >= 3 circuit days in 15 sessions → rejected
 - Limit Buy Price instruction: `Listing Day High x 1.035` (capped at 3.5% above listing high)
@@ -282,8 +283,10 @@ Stored on every signal/position document as `position_size_weight`.
 ## 7. Portfolio and Position Management
 
 ### 7.1 Portfolio Cap Guard
-- `MAX_ACTIVE_POSITIONS` (default: **5**) = soft cap — signals exceeding this are written with `status: "PAPER_ONLY"`
+- `MAX_ACTIVE_POSITIONS` (default: **5**) = soft cap — signals exceeding this are written with `status: "PAPER_ONLY"` (position row is still upserted)
 - `HARD_ACTIVE_POSITIONS` (default: `MAX_ACTIVE_POSITIONS + 2` = **7**) = hard cap
+- Consolidation production path forces `PAPER_ONLY` (OOS forward test); listing/re-entry/hourly honor soft/hard caps
+- Hourly never overwrites an existing `ACTIVE`/`PAPER_ONLY` row for the same symbol
 - `PAPER_ONLY` signals are included in **strategy expectancy analytics** but excluded from **live capital P&L calculations**
 
 ### 7.2 Trailing Stop Update Logic

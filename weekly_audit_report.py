@@ -416,30 +416,46 @@ def audit_logic_integrity(positions_col):
                     "breach_pct":   round(breach_pct, 2)
                 })
 
-        # Shadow SL must be below peak price and match the trailing logic bounds
-        max_runup = _safe_float(doc.get("max_runup_pct", 0.0)) or 0.0
-        peak_price = ep * (1 + max_runup / 100.0) if ep else None
-        
+        # Shadow SL must match trailing bounds from a reliable peak.
+        # Prefer stored max_runup_pct; if wiped, fall back to peak_price_during_trade.
+        # If neither exists, do not invent peak=entry (that false-criticals every week).
+        max_runup = _safe_float(doc.get("max_runup_pct"))
+        peak_stored = _safe_float(doc.get("peak_price_during_trade"))
+        if max_runup is not None and ep:
+            peak_price = ep * (1 + max_runup / 100.0)
+        elif peak_stored is not None and ep:
+            peak_price = max(peak_stored, ep)
+        else:
+            peak_price = None
+
         for pct, factor in [(8, 0.92), (10, 0.90), (12, 0.88)]:
             skey = f"shadow_sl_{pct}pct"
             ssl  = _safe_float(doc.get(skey))
             if ssl is not None and ep is not None:
                 initial_stop = round(ep * factor, 2)
-                expected_trailed = round(peak_price * factor, 2) if peak_price else initial_stop
-                
                 status_key = f"shadow_status_{pct}pct"
                 sstatus = doc.get(status_key, "ACTIVE")
-                
-                if sstatus == "ACTIVE":
-                    if ssl < initial_stop - 0.5:
+
+                if sstatus != "ACTIVE":
+                    continue
+
+                if ssl < initial_stop - 0.5:
+                    shadow_sl_issues.append({
+                        "symbol": sym, "field": skey, "value": ssl,
+                        "reason": f"Value {ssl} is below initial stop {initial_stop} (stop cannot trail down)"
+                    })
+                elif peak_price is not None:
+                    expected_trailed = round(peak_price * factor, 2)
+                    # Allow slack when peak is high-based (peak_price_during_trade)
+                    # vs close-based max_runup used by live shadow trail.
+                    slack = max(0.5, expected_trailed * 0.02)
+                    if ssl > expected_trailed + slack:
                         shadow_sl_issues.append({
                             "symbol": sym, "field": skey, "value": ssl,
-                            "reason": f"Value {ssl} is below initial stop {initial_stop} (stop cannot trail down)"
-                        })
-                    elif ssl > expected_trailed + 0.5:
-                        shadow_sl_issues.append({
-                            "symbol": sym, "field": skey, "value": ssl,
-                            "reason": f"Value {ssl} exceeds maximum trailed stop {expected_trailed} based on peak runup"
+                            "reason": (
+                                f"Value {ssl} exceeds maximum trailed stop "
+                                f"{expected_trailed} based on peak runup"
+                            )
                         })
 
     if trailing_inverted:
@@ -477,15 +493,27 @@ def audit_performance_gate(positions_col, signals_col):
       - Active position average unrealized PnL
       - Expectancy estimate: win_rate * avg_win + (1 - win_rate) * avg_loss
       - PAPER_ONLY signal rate (too many = capital constraint, not signal quality)
+
+    Soft goals use the IPO / consolidation edge cohort only — INTRADAY grades are
+    reported separately so hourly noise does not pollute the weekly expectancy gate.
     """
     SEC = "PERFORMANCE_GATE"
 
-    closed_docs = list(positions_col.find({"status": "CLOSED"}, {"_id": 0}))
-    active_docs = list(positions_col.find({"status": "ACTIVE"},  {"_id": 0}))
+    def _is_intraday(doc: dict) -> bool:
+        grade = str(doc.get("grade") or "").upper()
+        sig_type = str(doc.get("signal_type") or "").upper()
+        return grade == "INTRADAY" or sig_type == "INTRADAY"
+
+    closed_all = list(positions_col.find({"status": "CLOSED"}, {"_id": 0}))
+    active_all = list(positions_col.find({"status": "ACTIVE"},  {"_id": 0}))
+    closed_docs = [d for d in closed_all if not _is_intraday(d)]
+    active_docs = [d for d in active_all if not _is_intraday(d)]
+    closed_intra = [d for d in closed_all if _is_intraday(d)]
+    active_intra = [d for d in active_all if _is_intraday(d)]
     paper_count = positions_col.count_documents({"status": "PAPER_ONLY"})
     total_sigs  = signals_col.count_documents({})
 
-    # ── Closed book ──
+    # ── Closed book (edge cohort) ──
     closed_pnls  = []
     win_exits    = []
     loss_exits   = []
@@ -508,19 +536,34 @@ def audit_performance_gate(positions_col, signals_col):
     avg_loss   = sum(loss_exits) / len(loss_exits) if loss_exits else 0.0
     expectancy = win_rate * avg_win + (1 - win_rate) * avg_loss if n_closed > 0 else None
 
-    _find("INFO", SEC, f"ℹ️  Closed trades: {n_closed} | Winners: {n_winners} | Win rate: {win_rate:.1%}")
+    n_intra_closed = len(closed_intra)
+    n_intra_active = len(active_intra)
+    _find("INFO", SEC,
+          f"ℹ️  Cohort filter: excluding INTRADAY "
+          f"(closed={n_intra_closed}, active={n_intra_active}) from soft goals")
+    _find("INFO", SEC, f"ℹ️  Closed trades (edge): {n_closed} | Winners: {n_winners} | Win rate: {win_rate:.1%}")
     _find("INFO", SEC, f"ℹ️  Avg realized PnL: {avg_pnl:+.2f}% | Avg win: {avg_win:+.2f}% | Avg loss: {avg_loss:+.2f}%")
+
+    if n_intra_closed > 0:
+        intra_pnls = [_safe_float(d.get("pnl_pct")) for d in closed_intra]
+        intra_pnls = [p for p in intra_pnls if p is not None]
+        if intra_pnls:
+            intra_avg = sum(intra_pnls) / len(intra_pnls)
+            intra_wr = sum(1 for p in intra_pnls if p > 0) / len(intra_pnls)
+            _find("INFO", SEC,
+                  f"ℹ️  INTRADAY closed (info only): {len(intra_pnls)} | "
+                  f"WR {intra_wr:.1%} | avg {intra_avg:+.2f}%")
 
     if n_closed >= 10:
         if win_rate < MIN_WIN_RATE_GOAL:
             _warn(SEC, f"Win rate {win_rate:.1%} is below soft goal of {MIN_WIN_RATE_GOAL:.0%}",
-                  {"closed_trades": n_closed, "winners": n_winners})
+                  {"closed_trades": n_closed, "winners": n_winners, "cohort": "edge_ex_intraday"})
         else:
             _ok(SEC, f"Win rate {win_rate:.1%} meets or exceeds {MIN_WIN_RATE_GOAL:.0%} soft goal")
 
         if avg_pnl < EXPECTED_EXPECTANCY_PCT:
             _warn(SEC, f"Avg realized PnL {avg_pnl:+.2f}% is negative on closed book",
-                  {"avg_pnl": avg_pnl, "n_closed": n_closed})
+                  {"avg_pnl": avg_pnl, "n_closed": n_closed, "cohort": "edge_ex_intraday"})
         else:
             _ok(SEC, f"Avg realized PnL {avg_pnl:+.2f}% is non-negative")
 
@@ -529,22 +572,23 @@ def audit_performance_gate(positions_col, signals_col):
                   f"ℹ️  Estimated expectancy (win_rate × avg_win + loss_rate × avg_loss): {expectancy:+.2f}%")
     else:
         _find("INFO", SEC,
-              f"ℹ️  Only {n_closed} closed trades — performance gate requires ≥10 for meaningful stats")
+              f"ℹ️  Only {n_closed} closed edge trades — performance gate requires ≥10 for meaningful stats")
 
-    # ── Active book ──
+    # ── Active book (edge cohort) ──
     active_pnls = [_safe_float(d.get("pnl_pct")) for d in active_docs]
     active_pnls = [p for p in active_pnls if p is not None]
     n_active    = len(active_docs)
     avg_active  = sum(active_pnls) / n_active if n_active > 0 else None
 
-    _find("INFO", SEC, f"ℹ️  Active positions: {n_active}" +
-          (f" | Avg unrealized PnL: {avg_active:+.2f}%" if avg_active is not None else ""))
+    _find("INFO", SEC, f"ℹ️  Active positions (edge): {n_active}" +
+          (f" | Avg unrealized PnL: {avg_active:+.2f}%" if avg_active is not None else "") +
+          (f" | INTRADAY active: {n_intra_active}" if n_intra_active else ""))
 
-    # Full cohort view (closed + active unrealized)
+    # Full cohort view (closed + active unrealized) — edge only
     all_pnls     = closed_pnls + active_pnls
     cohort_avg   = sum(all_pnls) / len(all_pnls) if all_pnls else None
     if cohort_avg is not None:
-        _find("INFO", SEC, f"ℹ️  Full cohort avg PnL (closed + active): {cohort_avg:+.2f}%")
+        _find("INFO", SEC, f"ℹ️  Full edge cohort avg PnL (closed + active): {cohort_avg:+.2f}%")
         if cohort_avg < 0:
             _warn(SEC, f"Full cohort avg PnL {cohort_avg:+.2f}% is negative — active runners not yet compensating for closed losses")
 
@@ -563,6 +607,9 @@ def audit_performance_gate(positions_col, signals_col):
         "n_active":   n_active,
         "avg_active": avg_active,
         "cohort_avg": cohort_avg,
+        "n_intraday_closed": n_intra_closed,
+        "n_intraday_active": n_intra_active,
+        "cohort": "edge_ex_intraday",
     }
 
 # ─── Section 5: Exit Integrity ─────────────────────────────────────────────────
@@ -842,11 +889,18 @@ def _estimate_trading_days_in_range(start: date, end: date) -> int:
 
 def fix_shadow_sl_above_entry(positions_col) -> list:
     """
-    Fix #1: Shadow SL fields that are corrupt/incorrect based on trailing logic.
-    Recomputes the correct expected trailing stop loss from the entry_price and max_runup_pct.
+    Fix #1: Shadow SL fields that are corrupt vs trailing logic.
+
+    Safe rules:
+      - Only ACTIVE shadow lanes.
+      - Always lift stops that fell below the initial (entry * factor) floor.
+      - Only *lower* a stop when max_runup_pct is present and the stop clearly
+        exceeds peak-based trail. Never invent peak=entry when max_runup was wiped
+        — that used to ratchet live shadows down every weekly audit.
     """
     applied = []
     docs = list(positions_col.find({}, {"symbol": 1, "entry_price": 1, "max_runup_pct": 1,
+                                        "peak_price_during_trade": 1,
                                         "shadow_sl_8pct": 1, "shadow_sl_10pct": 1,
                                         "shadow_sl_12pct": 1, "shadow_status_8pct": 1,
                                         "shadow_status_10pct": 1, "shadow_status_12pct": 1,
@@ -857,8 +911,16 @@ def fix_shadow_sl_above_entry(positions_col) -> list:
         if ep is None or ep <= 0:
             continue
 
-        max_runup = _safe_float(doc.get("max_runup_pct", 0.0)) or 0.0
-        peak_price = ep * (1 + max_runup / 100.0)
+        max_runup = _safe_float(doc.get("max_runup_pct"))
+        peak_stored = _safe_float(doc.get("peak_price_during_trade"))
+        has_reliable_peak = max_runup is not None
+        if has_reliable_peak:
+            peak_price = ep * (1 + max_runup / 100.0)
+        elif peak_stored is not None:
+            peak_price = max(peak_stored, ep)
+            has_reliable_peak = True
+        else:
+            peak_price = ep
 
         updates = {}
         for pct_label, factor in [("8pct", 0.92), ("10pct", 0.90), ("12pct", 0.88)]:
@@ -866,14 +928,18 @@ def fix_shadow_sl_above_entry(positions_col) -> list:
             stored = _safe_float(doc.get(field))
             status_field = f"shadow_status_{pct_label}"
             sstatus = doc.get(status_field, "ACTIVE")
-            
-            if stored is not None and sstatus == "ACTIVE":
-                initial_stop = round(ep * factor, 2)
-                expected_trailed = round(peak_price * factor, 2)
-                
-                # If stored stop is below initial stop or exceeds peak trailed stop, correct it
-                if stored < initial_stop - 0.5 or stored > expected_trailed + 0.5:
-                    updates[field] = expected_trailed
+
+            if stored is None or sstatus != "ACTIVE":
+                continue
+
+            initial_stop = round(ep * factor, 2)
+            expected_trailed = round(peak_price * factor, 2)
+
+            if stored < initial_stop - 0.5:
+                # Floored below initial — lift to at least initial (or trailed if known)
+                updates[field] = max(initial_stop, expected_trailed) if has_reliable_peak else initial_stop
+            elif has_reliable_peak and stored > expected_trailed + max(0.5, expected_trailed * 0.02):
+                updates[field] = expected_trailed
 
         if updates:
             try:
@@ -881,11 +947,159 @@ def fix_shadow_sl_above_entry(positions_col) -> list:
                     {"symbol": sym},
                     {"$set": updates}
                 )
-                desc = f"[FIX:SHADOW_SL] {sym}: updated {list(updates.keys())} using peak_price={round(peak_price, 2)}"
+                desc = (
+                    f"[FIX:SHADOW_SL] {sym}: updated {list(updates.keys())} "
+                    f"using peak_price={round(peak_price, 2)} "
+                    f"(reliable_peak={has_reliable_peak})"
+                )
                 applied.append(desc)
                 print(f"  {desc}")
             except Exception as e:
                 print(f"  [FIX:SHADOW_SL] ERROR updating {sym}: {e}")
+    return applied
+
+
+def fix_open_position_live_metrics(positions_col) -> list:
+    """
+    Restore pnl_pct / days_held / max_runup_pct on open positions when wiped
+    by the former ACTIVE upsert $unset path.
+
+    max_runup is reconstructed from ACTIVE shadow stops when possible (matches
+    live close-based trail), else from peak_price_during_trade / current_price.
+    Does not invent prices.
+    """
+    applied = []
+    docs = list(positions_col.find(
+        {"status": {"$in": ["ACTIVE", "PAPER_ONLY"]}},
+        {
+            "symbol": 1, "status": 1, "entry_price": 1, "current_price": 1,
+            "entry_date": 1, "pnl_pct": 1, "days_held": 1, "max_runup_pct": 1,
+            "peak_price_during_trade": 1,
+            "shadow_sl_8pct": 1, "shadow_sl_10pct": 1, "shadow_sl_12pct": 1,
+            "shadow_status_8pct": 1, "shadow_status_10pct": 1, "shadow_status_12pct": 1,
+            "_id": 0,
+        },
+    ))
+    today = date.today()
+    for doc in docs:
+        sym = doc.get("symbol", "UNKNOWN")
+        ep = _safe_float(doc.get("entry_price"))
+        cp = _safe_float(doc.get("current_price"))
+        if ep is None or ep <= 0:
+            continue
+
+        updates = {}
+        if doc.get("pnl_pct") is None and cp is not None:
+            updates["pnl_pct"] = round((cp - ep) / ep * 100.0, 4)
+
+        if doc.get("days_held") is None and doc.get("entry_date") is not None:
+            try:
+                ed = pd.to_datetime(doc.get("entry_date")).date()
+                updates["days_held"] = max((today - ed).days, 0)
+            except Exception:
+                pass
+
+        if doc.get("max_runup_pct") is None:
+            shadow_peaks = []
+            for pct_label, factor in [("8pct", 0.92), ("10pct", 0.90), ("12pct", 0.88)]:
+                ssl = _safe_float(doc.get(f"shadow_sl_{pct_label}"))
+                st = doc.get(f"shadow_status_{pct_label}", "ACTIVE")
+                if ssl is not None and st == "ACTIVE" and ssl > 0:
+                    shadow_peaks.append(ssl / factor)
+
+            candidates = []
+            if shadow_peaks:
+                candidates.append((max(shadow_peaks) / ep - 1.0) * 100.0)
+            peak = _safe_float(doc.get("peak_price_during_trade"))
+            if peak is not None and peak > 0:
+                candidates.append((peak / ep - 1.0) * 100.0)
+            if cp is not None:
+                candidates.append((cp / ep - 1.0) * 100.0)
+            if candidates:
+                updates["max_runup_pct"] = round(max(0.0, max(candidates)), 4)
+
+        if not updates:
+            continue
+        try:
+            positions_col.update_one({"symbol": sym}, {"$set": updates})
+            desc = f"[FIX:LIVE_METRICS] {sym}: restored {list(updates.keys())}"
+            applied.append(desc)
+            print(f"  {desc}")
+        except Exception as e:
+            print(f"  [FIX:LIVE_METRICS] ERROR {sym}: {e}")
+    return applied
+
+
+def fix_duplicate_active_signals(signals_col, positions_col) -> list:
+    """
+    Close stale duplicate ACTIVE / POSITION_ACTIVE signals for the same symbol.
+    Keeps the signal linked to the open position when possible; otherwise the
+    newest by signal_date / signal_id. Does not modify positions.
+    """
+    applied = []
+    if signals_col is None:
+        return applied
+
+    open_sigs = list(signals_col.find(
+        {"status": {"$in": ["ACTIVE", "POSITION_ACTIVE"]}},
+        {
+            "symbol": 1, "signal_id": 1, "status": 1, "signal_date": 1,
+            "grade": 1, "signal_type": 1, "_id": 1,
+        },
+    ))
+    by_sym = defaultdict(list)
+    for d in open_sigs:
+        sym = d.get("symbol")
+        if sym:
+            by_sym[sym].append(d)
+
+    pos_signal_ids = {}
+    if positions_col is not None:
+        for p in positions_col.find(
+            {"status": {"$in": ["ACTIVE", "PAPER_ONLY"]}},
+            {"symbol": 1, "signal_id": 1, "_id": 0},
+        ):
+            if p.get("symbol") and p.get("signal_id"):
+                pos_signal_ids[p["symbol"]] = p["signal_id"]
+
+    for sym, rows in by_sym.items():
+        if len(rows) < 2:
+            continue
+
+        keep_id = pos_signal_ids.get(sym)
+        if keep_id and any(r.get("signal_id") == keep_id for r in rows):
+            keep = next(r for r in rows if r.get("signal_id") == keep_id)
+        else:
+            def _sort_key(r):
+                sd = r.get("signal_date") or ""
+                try:
+                    sd_ts = pd.to_datetime(sd)
+                except Exception:
+                    sd_ts = pd.Timestamp.min
+                return (sd_ts, str(r.get("signal_id") or ""))
+
+            keep = sorted(rows, key=_sort_key)[-1]
+
+        for r in rows:
+            if r.get("signal_id") == keep.get("signal_id"):
+                continue
+            try:
+                signals_col.update_one(
+                    {"_id": r["_id"]},
+                    {"$set": {
+                        "status": "CLOSED",
+                        "exit_reason": "Audit: duplicate ACTIVE signal superseded",
+                        "updated_at": datetime.now(timezone.utc),
+                    }},
+                )
+                desc = (
+                    f"[FIX:DUP_SIGNAL] {sym}: closed {r.get('signal_id')} "
+                    f"(kept {keep.get('signal_id')})"
+                )
+                applied.append(desc)
+                print(f"  {desc}")
+            except Exception as e:
+                print(f"  [FIX:DUP_SIGNAL] ERROR {sym}: {e}")
     return applied
 
 
@@ -1108,14 +1322,18 @@ def build_report(perf_data: dict, fixes_applied: list = None) -> str:
         lines.append("─" * 72)
         lines.append("  PERFORMANCE SNAPSHOT")
         lines.append("─" * 72)
-        lines.append(f"  Closed trades     : {perf_data.get('n_closed', 'N/A')}")
+        lines.append(f"  Closed trades     : {perf_data.get('n_closed', 'N/A')} (edge, ex-INTRADAY)")
         wr = perf_data.get("win_rate")
         lines.append(f"  Win rate          : {wr:.1%}" if wr is not None else "  Win rate          : N/A")
         ap = perf_data.get("avg_pnl")
         lines.append(f"  Avg realized PnL  : {ap:+.2f}%" if ap is not None else "  Avg realized PnL  : N/A")
         ex = perf_data.get("expectancy")
         lines.append(f"  Estimated expectancy: {ex:+.2f}%" if ex is not None else "  Estimated expectancy: N/A (need ≥10 closed)")
-        lines.append(f"  Active positions  : {perf_data.get('n_active', 'N/A')}")
+        lines.append(f"  Active positions  : {perf_data.get('n_active', 'N/A')} (edge)")
+        ni_c = perf_data.get("n_intraday_closed")
+        ni_a = perf_data.get("n_intraday_active")
+        if ni_c or ni_a:
+            lines.append(f"  INTRADAY (info)   : closed={ni_c or 0} | active={ni_a or 0}")
         ca = perf_data.get("cohort_avg")
         lines.append(f"  Full cohort avg   : {ca:+.2f}%" if ca is not None else "  Full cohort avg   : N/A")
         lines.append("")
@@ -1227,7 +1445,7 @@ def _build_telegram_message(
         f"Errors: <b>{n_errors}</b>  |  Warnings: <b>{n_warnings}</b>",
         "",
         "\U0001f4c8 <b>Performance Snapshot</b>",
-        f"\u2022 Closed trades  : <b>{n_c}</b>",
+        f"\u2022 Closed trades  : <b>{n_c}</b> <i>(edge, ex-INTRADAY)</i>",
     ]
     if wr is not None:
         lines.append(f"\u2022 Win rate       : <b>{wr:.1%}</b>")
@@ -1351,12 +1569,26 @@ def main():
     if args.fix and run_all:
         print("\n[AUDIT] Applying safe data fixes...")
 
+        live_metric_fixes = fix_open_position_live_metrics(positions_col)
+        fixes_log.extend(live_metric_fixes)
+        if live_metric_fixes:
+            print(f"  Live metrics: restored {len(live_metric_fixes)} open position(s)")
+        else:
+            print("  Live metrics: no restore needed")
+
         sl_fixes = fix_shadow_sl_above_entry(positions_col)
         fixes_log.extend(sl_fixes)
         if sl_fixes:
             print(f"  Shadow SL: fixed {len(sl_fixes)} field group(s)")
         else:
             print("  Shadow SL: no corrections needed")
+
+        dup_sig_fixes = fix_duplicate_active_signals(signals_col, positions_col)
+        fixes_log.extend(dup_sig_fixes)
+        if dup_sig_fixes:
+            print(f"  Dup signals: closed {len(dup_sig_fixes)} stale ACTIVE signal(s)")
+        else:
+            print("  Dup signals: no duplicates to close")
 
         regime_fixes = fix_missing_market_regime(positions_col, signals_col)
         fixes_log.extend(regime_fixes)

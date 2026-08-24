@@ -1450,9 +1450,10 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None, bul
             # Day 2+ avg baseline check (vol_vs_avg >= MIN_VOLUME_MULTIPLIER above).
             volume_vs_listing_day = current_volume / listing_day_volume if listing_day_volume > 0 else 0
 
-            # --- Strict quality gate (default): only persist / alert full-quality breakouts ---
-            if LISTING_STRICT_QUALITY and signal_type == 'BREAKOUT':
-                if days_since_listing > MAX_DAYS_SINCE_LISTING_FOR_BREAKOUT:
+            # --- Strict quality gate (default): full-quality BREAKOUT and BASE_BREAKOUT ---
+            # Tier B previously skipped the volume spike gate under strict mode.
+            if LISTING_STRICT_QUALITY and signal_type in ('BREAKOUT', 'BASE_BREAKOUT'):
+                if signal_type == 'BREAKOUT' and days_since_listing > MAX_DAYS_SINCE_LISTING_FOR_BREAKOUT:
                     rejection_reason = (
                         f"Strict: {days_since_listing}d since listing (max {MAX_DAYS_SINCE_LISTING_FOR_BREAKOUT}d)"
                     )
@@ -1460,7 +1461,8 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None, bul
                     return None
                 if not volume_spike:
                     rejection_reason = (
-                        f"Strict: volume spike required (current {current_volume:,.0f} vs avg {avg_volume:,.0f}, need {MIN_VOLUME_MULTIPLIER}x)"
+                        f"Strict: volume spike required for {signal_type} "
+                        f"(current {current_volume:,.0f} vs avg {avg_volume:,.0f}, need {MIN_VOLUME_MULTIPLIER}x)"
                     )
                     logger.info(f"⏭️ Skipping {symbol}: {rejection_reason}")
                     return None
@@ -1819,11 +1821,21 @@ def commit_trade_to_db(breakout_data):
     Returns: (success, portfolio_full, active_count, market_regime, size_multiplier)
     """
     try:
-        from db import upsert_signal, upsert_position, db
+        from db import upsert_signal, upsert_position, db, has_active_position
+        
+        symbol = breakout_data.get('symbol')
+        if not symbol:
+            return False, False, 0, 'UNKNOWN', 0.4
+
+        # Never overwrite an existing ACTIVE capital position (symbol-keyed upsert).
+        if has_active_position(symbol):
+            logger.warning(
+                f"⏭️ Skipping listing commit for {symbol} — ACTIVE position already exists"
+            )
+            return False, False, 0, 'UNKNOWN', 0.4
         
         # 1. Fetch current active count
-        active_positions = list(db.positions.find({"status": "ACTIVE"}))
-        active_count = len(active_positions)
+        active_count = db.positions.count_documents({"status": "ACTIVE"})
         
         # 2. Get market regime and size weight
         mr = breakout_data.get('market_regime', 'UNKNOWN')
@@ -1835,24 +1847,53 @@ def commit_trade_to_db(breakout_data):
         }
         size_mult = regime_multipliers.get(mr, 0.4)
         
-        # Check if portfolio is full (Soft Cap of 10)
-        soft_cap = getattr(scanner_module, 'MAX_ACTIVE_POSITIONS', 10)
-        portfolio_full = active_count >= soft_cap
+        # Soft / hard cap parity with consolidation scanner
+        soft_cap = getattr(scanner_module, 'MAX_ACTIVE_POSITIONS', 5)
+        hard_cap = getattr(scanner_module, 'HARD_ACTIVE_POSITIONS', soft_cap + 2)
+        winner_score = breakout_data.get('winner_score', 0) or 0
+        if active_count < soft_cap:
+            portfolio_full = False
+        elif active_count >= hard_cap:
+            portfolio_full = True
+        else:
+            # Soft cap breached: allow pristine / high-score / correction-regime only
+            is_pristine = (
+                winner_score >= 4
+                or mr == "CORRECTION"
+                or breakout_data.get('tier') == 'A'
+            )
+            portfolio_full = not is_pristine
+            if is_pristine:
+                logger.info(
+                    f"🔓 Soft Cap Bypass: listing {symbol} "
+                    f"(tier={breakout_data.get('tier')}, score={winner_score}, regime={mr}) "
+                    f"allowed up to hard cap ({active_count}/{hard_cap})"
+                )
+            else:
+                logger.info(
+                    f"🔒 Soft Cap Enforced: listing {symbol} → PAPER_ONLY "
+                    f"({active_count}/{soft_cap} soft, hard {hard_cap})"
+                )
         
         # Generate signal_id (deterministic format)
         today_str = datetime.now().strftime("%Y%m%d")
-        signal_id = f"BREAKOUT_{breakout_data['symbol']}_{today_str}"
+        signal_id = f"BREAKOUT_{symbol}_{today_str}"
+
+        # Position grade must be LISTING_BREAKOUT so stop_loss_update_scan applies
+        # IPO dead-money / volume-exhaustion / trail thresholds (not consol defaults).
+        position_grade = "LISTING_BREAKOUT"
         
         # Create signal doc
         signal_doc = {
             "signal_id": signal_id,
-            "symbol": breakout_data['symbol'],
+            "symbol": symbol,
             "signal_date": datetime.now(),
             "signal_time": _now_ist().strftime("%H:%M:%S"),
             "entry_price": breakout_data['entry_price'],
             "stop_loss": breakout_data['stop_loss'],
             "target_price": breakout_data['target_price'],
             "status": "PAPER_ONLY" if portfolio_full else "ACTIVE",
+            "grade": position_grade,
             "volume_spike": breakout_data['volume_spike'],
             "volume_vs_listing_day": breakout_data['volume_vs_listing_day'],
             "listing_range_pct": breakout_data['listing_range_pct'],
@@ -1872,7 +1913,8 @@ def commit_trade_to_db(breakout_data):
         
         # Create position doc
         pos_doc = {
-            "symbol": breakout_data['symbol'],
+            "signal_id": signal_id,
+            "symbol": symbol,
             "entry_date": datetime.now(),
             "entry_price": breakout_data['entry_price'],
             "current_price": breakout_data['current_price'],
@@ -1883,7 +1925,9 @@ def commit_trade_to_db(breakout_data):
             "days_held": 0,
             "max_runup_pct": 0.0,
             "max_drawdown_pct": 0.0,
-            "grade": breakout_data.get('winner_label', 'STANDARD'),
+            "grade": position_grade,
+            "winner_label": breakout_data.get('winner_label', 'STANDARD'),
+            "winner_score": breakout_data.get('winner_score', 0),
             "position_size_pct": breakout_data.get('position_size_pct', 60),
             "version": SCANNER_VERSION,
             "strategy_version": "2.5.0-listing-day",

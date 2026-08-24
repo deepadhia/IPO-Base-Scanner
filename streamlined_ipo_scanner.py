@@ -2548,6 +2548,20 @@ def detect_live_patterns(symbols, listing_map):
                     logger.info(f"⚠️ Downgrading {sym} from {grade} to C due to Microcap Penalty (< ₹1000Cr)")
                     grade = "C"
                 
+                # Gate #13: MIN_LIVE_GRADE (env default B) — was documented but unused live
+                if not is_live_grade_allowed(grade):
+                    logger.info(
+                        f"⏭️ Skipping {sym} - grade {grade} below MIN_LIVE_GRADE={MIN_LIVE_GRADE}"
+                    )
+                    _log_consolidation_reject_once({
+                        "reason": "low_grade",
+                        "grade": grade,
+                        "min_required": MIN_LIVE_GRADE,
+                        "mode": "live",
+                        **current_metrics,
+                    })
+                    continue
+                
                 # --- Cohort Validation (Multi-Bucket Research) ---
                 valid_cohorts = []
                 for name, config in RESEARCH_COHORTS.items():
@@ -3389,6 +3403,15 @@ def detect_scan(symbols, listing_map):
                 grade = assign_grade(score)
                 if grade == "D":
                     _log_scan_reject_once({"reason": "grade_d", "grade": grade, "mode": "scan", **metrics})
+                    continue
+                if not is_live_grade_allowed(grade):
+                    _log_scan_reject_once({
+                        "reason": "low_grade",
+                        "grade": grade,
+                        "min_required": MIN_LIVE_GRADE,
+                        "mode": "scan",
+                        **metrics,
+                    })
                     continue
                 
                 # This is a LIVE pattern - generate signal
