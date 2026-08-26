@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, mock_open
 import pandas as pd
 from datetime import datetime, date
 import sys
@@ -454,5 +454,100 @@ class TestRegressionFixes(unittest.TestCase):
             self.assertEqual(pos_args["status"], "PAPER_ONLY")
             self.assertEqual(pos_args["shadow_status_8pct"], "ACTIVE")
 
+    def test_dynamic_nse_holidays_and_market_day(self):
+        """Test dynamic holiday fetching, weekend detection, and market day checking."""
+        from utils import get_dynamic_nse_holidays, is_market_day, get_last_trading_day
+        
+        # 1. Republic day (Jan 26) is a known holiday
+        holidays_2026 = get_dynamic_nse_holidays(2026)
+        self.assertIn("2026-01-26", holidays_2026)
+        self.assertFalse(is_market_day("2026-01-26"))
+
+        # 2. Weekend check (2026-08-29 is Saturday, 2026-08-30 is Sunday)
+        self.assertFalse(is_market_day("2026-08-29"))
+        self.assertFalse(is_market_day("2026-08-30"))
+
+        # 3. Regular trading day (2026-08-26 Wednesday is open)
+        self.assertTrue(is_market_day("2026-08-26"))
+
+        # 4. get_last_trading_day walking back
+        last_td = get_last_trading_day("2026-08-31") # Monday
+        self.assertEqual(last_td.strftime("%Y-%m-%d"), "2026-08-28") # Should be Friday
+
+    def test_holiday_notification_deduplication(self):
+        """Test that send_holiday_notification_once only alerts once per day."""
+        from utils import send_holiday_notification_once
+        
+        mock_telegram = MagicMock()
+        test_date = "2026-12-25" # Christmas
+        
+        with patch('db.system_audits_col') as mock_audits, patch('os.path.exists', return_value=False), patch('builtins.open', mock_open()):
+            # First call: no existing record in DB or on disk
+            mock_audits.find_one.return_value = None
+            
+            sent_first = send_holiday_notification_once("scanner_1", today_str=test_date, send_telegram_fn=mock_telegram)
+            self.assertTrue(sent_first)
+            self.assertEqual(mock_telegram.call_count, 1)
+            self.assertTrue(mock_audits.update_one.called)
+
+            # Second call (e.g. hourly scanner next hour): existing record found
+            mock_audits.find_one.return_value = {
+                "audit_type": "HOLIDAY_NOTIFICATION_SENT",
+                "date": test_date,
+                "triggered_by": "scanner_1"
+            }
+            
+            mock_telegram.reset_mock()
+            sent_second = send_holiday_notification_once("hourly_scanner", today_str=test_date, send_telegram_fn=mock_telegram)
+            self.assertFalse(sent_second)
+            self.assertEqual(mock_telegram.call_count, 0) # Suppressed!
+
+    def test_position_and_exit_alert_color_formatting(self):
+        """Test broker-grade green/red color styling for positive and negative returns."""
+        from streamlined_ipo_scanner import format_position_update_alert, format_exit_alert
+
+        # 1. Positive Return Position Update
+        pos_msg = format_position_update_alert(
+            symbol="TESTPROFIT",
+            current_price=120.0,
+            entry_price=100.0,
+            old_trailing=95.0,
+            new_trailing=105.0,
+            pnl_pct=20.0,
+            days_held=10,
+            grade="A"
+        )
+        self.assertIn("🟢", pos_msg)
+        self.assertIn("+20.00%", pos_msg)
+        self.assertIn("▲ +₹20.00/sh", pos_msg)
+        self.assertIn("🔺 Stop Raised", pos_msg)
+
+        # 2. Negative Return Position Update
+        loss_msg = format_position_update_alert(
+            symbol="TESTLOSS",
+            current_price=90.0,
+            entry_price=100.0,
+            old_trailing=85.0,
+            new_trailing=85.0,
+            pnl_pct=-10.0,
+            days_held=5,
+            grade="B"
+        )
+        self.assertIn("🔴", loss_msg)
+        self.assertIn("-10.00%", loss_msg)
+        self.assertIn("▼ ₹-10.00/sh", loss_msg)
+        self.assertIn("🔹 Maintained", loss_msg)
+
+        # 3. Exit Alert Positive
+        exit_pos_msg = format_exit_alert("TESTPROFIT", "Partial Take", 150.0, 50.0, 20, 100.0)
+        self.assertIn("🟢", exit_pos_msg)
+        self.assertIn("+50.00%", exit_pos_msg)
+
+        # 4. Exit Alert Negative
+        exit_loss_msg = format_exit_alert("TESTLOSS", "Stop Loss", 92.0, -8.0, 12, 100.0)
+        self.assertIn("🔴", exit_loss_msg)
+        self.assertIn("-8.00%", exit_loss_msg)
+
 if __name__ == '__main__':
     unittest.main()
+

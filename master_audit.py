@@ -42,19 +42,20 @@ EXPECTED_VERSION = "3.4.0"
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
-NSE_HOLIDAYS_2025_2026 = {
-    # 2025
-    "2025-01-26", "2025-02-26", "2025-03-14", "2025-04-10",
-    "2025-04-14", "2025-04-18", "2025-05-01", "2025-08-15",
-    "2025-08-27", "2025-10-02", "2025-10-24", "2025-10-28",
-    "2025-11-05", "2025-11-15", "2025-12-25",
-    # 2026
-    "2026-01-26", "2026-02-19", "2026-03-03", "2026-03-19",
-    "2026-03-26", "2026-03-31", "2026-04-03", "2026-04-14",
-    "2026-05-01", "2026-05-28", "2026-06-26", "2026-08-15",
-    "2026-09-14", "2026-10-02", "2026-10-20",
-    "2026-11-10", "2026-11-24", "2026-12-25",
-}
+from utils import get_dynamic_nse_holidays
+
+class DynamicAuditHolidays(set):
+    """Dynamic holiday set for audit verification."""
+    def __contains__(self, item):
+        if isinstance(item, str) and len(item) >= 4:
+            try:
+                y = int(item[:4])
+                return item in get_dynamic_nse_holidays(y)
+            except ValueError:
+                pass
+        return item in get_dynamic_nse_holidays()
+
+NSE_HOLIDAYS_2025_2026 = DynamicAuditHolidays()
 
 MAX_REALISTIC_PNL_PCT    = 150.0
 MIN_REALISTIC_PNL_PCT    = -60.0

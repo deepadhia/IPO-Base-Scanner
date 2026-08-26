@@ -57,6 +57,9 @@ get_market_regime = scanner_module.get_market_regime
 classify_pattern_type = scanner_module.classify_pattern_type
 get_live_price = scanner_module.get_live_price
 is_market_day = getattr(scanner_module, 'is_market_day', lambda: True)
+send_holiday_notification_once = getattr(scanner_module, 'send_holiday_notification_once', None)
+if send_holiday_notification_once is None:
+    from utils import send_holiday_notification_once
 write_daily_log = scanner_module.write_daily_log  # Use shared writer — prevents version drift
 
 SCANNER_VERSION = "3.4.0"  # v3.4.0: Re-Entry Breakouts, Peak Price Tracking, Paper Cap Handling
@@ -879,11 +882,7 @@ def main():
         ist = timezone(td(hours=5, minutes=30))
         today_ist = datetime.now(ist).strftime("%Y-%m-%d")
         logger.info(f"📅 Market is closed today ({today_ist}). Skipping hourly scan.")
-        send_telegram(
-            f"📅 <b>Market Holiday / Non-Trading Day</b>\n\n"
-            f"🗓 Date: {today_ist}\n"
-            f"⏭ Hourly scanner skipped — NSE is closed today."
-        )
+        send_holiday_notification_once("hourly_breakout_scanner", today_ist, send_telegram)
         return
 
     scan_watchlist()

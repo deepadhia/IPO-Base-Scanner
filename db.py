@@ -24,6 +24,7 @@ listing_data_col = db["listing_data"] if db is not None else None
 watchlist_col = db["watchlist"] if db is not None else None
 system_audits_col = db["system_audits"] if db is not None else None
 daily_candles_col = db["daily_candles_cache"] if db is not None else None
+market_holidays_col = db["market_holidays"] if db is not None else None
 
 # In-process cache — avoids a DB round-trip on every data fetch
 _instrument_key_cache: dict = {}
@@ -104,6 +105,8 @@ def ensure_indexes():
     system_audits_col.create_index("timestamp")
     if daily_candles_col is not None:
         daily_candles_col.create_index("symbol", unique=True)
+    if market_holidays_col is not None:
+        market_holidays_col.create_index("year", unique=True)
 
 def insert_log(scanner: str, symbol: str, action: str, candle_timestamp, details: dict, version: str = SCANNER_VERSION, source: str = "live", log_type: str = "ACCEPTED"):
     global _rejection_guard_warned

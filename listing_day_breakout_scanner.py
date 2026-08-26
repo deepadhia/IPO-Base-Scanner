@@ -56,6 +56,9 @@ get_live_price = scanner_module.get_live_price
 get_market_regime = scanner_module.get_market_regime
 classify_pattern_type = scanner_module.classify_pattern_type
 is_market_day = getattr(scanner_module, 'is_market_day', lambda: True)
+send_holiday_notification_once = getattr(scanner_module, 'send_holiday_notification_once', None)
+if send_holiday_notification_once is None:
+    from utils import send_holiday_notification_once
 
 # Load environment
 load_dotenv()
@@ -2589,14 +2592,8 @@ def main():
         from datetime import timezone, timedelta as td
         ist = timezone(td(hours=5, minutes=30))
         today_ist = datetime.now(ist).strftime("%Y-%m-%d")
-        skip_msg = (
-            f"📅 <b>Listing Day: Market Holiday</b>\n\n"
-            f"🗓 Date: {today_ist}\n"
-            f"⏭ Scanner skipped — NSE is closed today.\n"
-            f"✅ Use --bypass-holiday to force run."
-        )
         logger.info(f"📅 Market is closed today ({today_ist}). Skipping listing day scan.")
-        send_telegram(skip_msg)
+        send_holiday_notification_once("listing_day_scanner", today_ist, send_telegram)
         sys.exit(0)
 
     scan_listing_day_breakouts()

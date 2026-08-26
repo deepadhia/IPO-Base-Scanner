@@ -573,65 +573,34 @@ def is_live_grade_allowed(grade: str) -> bool:
         # Unknown grade: be conservative and reject
         return False
 
-# NSE official trading holidays for 2025 and 2026
-# Source: NSE India holiday calendar
-NSE_HOLIDAYS = {
-    # 2025 holidays
-    "2025-01-26",  # Republic Day
-    "2025-02-26",  # Mahashivratri
-    "2025-03-14",  # Holi
-    "2025-04-10",  # Id-Ul-Fitr (Ramadan Eid)
-    "2025-04-14",  # Dr. Baba Saheb Ambedkar Jayanti
-    "2025-04-18",  # Good Friday
-    "2025-05-01",  # Maharashtra Day
-    "2025-08-15",  # Independence Day
-    "2025-08-27",  # Ganesh Chaturthi
-    "2025-10-02",  # Mahatma Gandhi Jayanti
-    "2025-10-02",  # Dussehra
-    "2025-10-24",  # Diwali Laxmi Pujan
-    "2025-10-28",  # Diwali Balipratipada
-    "2025-11-05",  # Prakash Gurpurb Sri Guru Nanak Dev Ji
-    "2025-11-15",  # ?
-    "2025-12-25",  # Christmas
-    # 2026 holidays
-    "2026-01-26",  # Republic Day
-    "2026-02-19",  # Chhatrapati Shivaji Maharaj Jayanti
-    "2026-03-03",  # Holi
-    "2026-03-19",  # Gudi Padwa
-    "2026-03-26",  # Shri Ram Navami
-    "2026-03-31",  # Shri Mahavir Jayanti
-    "2026-04-03",  # Good Friday
-    "2026-04-14",  # Dr. Baba Saheb Ambedkar Jayanti
-    "2026-05-01",  # Maharashtra Day
-    "2026-05-28",  # Bakri Id
-    "2026-06-26",  # Muharram
-    "2026-08-15",  # Independence Day
-    "2026-09-14",  # Ganesh Chaturthi
-    "2026-10-02",  # Mahatma Gandhi Jayanti
-    "2026-10-20",  # Dussehra
-    "2026-11-10",  # Diwali Balipratipada
-    "2026-11-24",  # Prakash Gurpurb Sri Guru Nanak Dev Ji
-    "2026-12-25",  # Christmas
-}
+# Dynamic NSE official trading holidays (fetched yearly via Upstox API with offline fallback)
+from utils import (
+    get_dynamic_nse_holidays,
+    is_market_day,
+    get_last_trading_day,
+    send_holiday_notification_once
+)
 
-def is_market_day() -> bool:
-    """Check if today is an NSE trading day (not a weekend, not a holiday).
-    Returns True if the market is open today, False otherwise."""
-    try:
-        from datetime import timezone, timedelta as td
-        ist = timezone(td(hours=5, minutes=30))
-        now_ist = datetime.now(ist)
-        today_str = now_ist.strftime("%Y-%m-%d")
-        # Check weekend (0=Monday, 6=Sunday)
-        if now_ist.weekday() >= 5:
-            return False
-        # Check NSE holiday list
-        if today_str in NSE_HOLIDAYS:
-            return False
-        return True
-    except Exception:
-        # If check fails, assume market is open (fail-open)
-        return True
+class DynamicNSEHolidays(set):
+    """Set proxy that dynamically includes current and adjacent year NSE holidays."""
+    def __contains__(self, item):
+        if isinstance(item, str) and len(item) >= 4:
+            try:
+                y = int(item[:4])
+                return item in get_dynamic_nse_holidays(y)
+            except ValueError:
+                pass
+        return item in get_dynamic_nse_holidays()
+
+    def __iter__(self):
+        y = datetime.now(timezone(timedelta(hours=5, minutes=30))).year
+        return iter(get_dynamic_nse_holidays(y - 1) | get_dynamic_nse_holidays(y) | get_dynamic_nse_holidays(y + 1))
+
+    def __len__(self):
+        y = datetime.now(timezone(timedelta(hours=5, minutes=30))).year
+        return len(get_dynamic_nse_holidays(y))
+
+NSE_HOLIDAYS = DynamicNSEHolidays()
 
 def is_market_hours() -> bool:
     """Check if current IST time is within Indian market hours (9:15 AM - 3:30 PM IST)
@@ -1142,7 +1111,7 @@ def format_signal_alert(symbol, grade, entry_price, stop_loss, target_price, sco
     return msg
 
 def format_exit_alert(symbol, exit_reason, exit_price, pnl_pct, days_held, entry_price):
-    """Format detailed exit alert"""
+    """Format detailed exit alert with broker-grade P&L colors (Dhan/Upstox style)"""
     # Exit reason emojis
     exit_emojis = {
         "Stop Loss": "🛑",
@@ -1153,19 +1122,25 @@ def format_exit_alert(symbol, exit_reason, exit_price, pnl_pct, days_held, entry
     }
     emoji = exit_emojis.get(exit_reason, "📊")
     
-    # PnL color
-    pnl_color = "🟢" if pnl_pct > 0 else "🔴"
+    # PnL color badge (green for positive, red for negative)
+    pnl_abs = exit_price - entry_price
+    if pnl_pct > 0:
+        pnl_badge = f"🟢 <b>+{pnl_pct:.2f}%</b> (▲ +₹{pnl_abs:,.2f}/sh)"
+    elif pnl_pct < 0:
+        pnl_badge = f"🔴 <b>{pnl_pct:.2f}%</b> (▼ ₹{pnl_abs:,.2f}/sh)"
+    else:
+        pnl_badge = f"⚪ <b>0.00%</b> (₹0.00/sh)"
     
     msg = f"""{emoji} <b>POSITION EXIT</b>
 
-📊 Symbol: <b>{symbol}</b>
-📋 Reason: <b>{exit_reason}</b>
-💰 Exit Price: ₹{exit_price:,.2f}
-{pnl_color} P&L: {pnl_pct:+.1f}%
-📅 Days Held: {days_held}
-💵 Entry: ₹{entry_price:,.2f}
+📊 <b>Symbol:</b> <b>{symbol}</b>
+📋 <b>Exit Reason:</b> <b>{exit_reason}</b>
+💰 <b>Exit Price:</b> ₹{exit_price:,.2f}
+💵 <b>Entry Price:</b> ₹{entry_price:,.2f}
+📈 <b>Realized P&L:</b> {pnl_badge}
+📅 <b>Days Held:</b> {days_held} day{'s' if days_held != 1 else ''}
 
-{datetime.now().strftime('%Y-%m-%d %H:%M')}"""
+⏰ <i>{datetime.now().strftime('%d %b %Y, %H:%M IST')}</i>"""
     return msg
 
 
@@ -3918,24 +3893,31 @@ def monthly_review():
     send_telegram(msg)
 
 def format_position_update_alert(symbol, current_price, entry_price, old_trailing, new_trailing, pnl_pct, days_held, grade):
-    """Format position update alert"""
-    pnl_emoji = "📈" if pnl_pct >= 0 else "📉"
-    trailing_changed = "✅" if new_trailing > old_trailing else "➡️"
+    """Format professional broker-grade position update alert (Dhan/Upstox style)."""
+    pnl_abs = current_price - entry_price
+    if pnl_pct > 0:
+        pnl_badge = f"🟢 <b>+{pnl_pct:.2f}%</b> (▲ +₹{pnl_abs:,.2f}/sh)"
+    elif pnl_pct < 0:
+        pnl_badge = f"🔴 <b>{pnl_pct:.2f}%</b> (▼ ₹{pnl_abs:,.2f}/sh)"
+    else:
+        pnl_badge = f"⚪ <b>0.00%</b> (₹0.00/sh)"
+        
+    trailing_status = "🔺 Stop Raised" if new_trailing > old_trailing else "🔹 Maintained"
     
-    msg = f"""🔄 <b>Position Update</b>
+    msg = f"""🔄 <b>POSITION UPDATE</b>
 
-📊 Symbol: <b>{symbol}</b>
-⭐ Grade: {grade}
-💰 Current Price: ₹{current_price:,.2f}
-💵 Entry Price: ₹{entry_price:,.2f}
-{pnl_emoji} P&L: {pnl_pct:+.2f}%
-📅 Days Held: {days_held}
+📊 <b>Symbol:</b> <b>{symbol}</b>
+⭐ <b>Grade:</b> {grade}
+💰 <b>Current LTP:</b> ₹{current_price:,.2f}
+💵 <b>Entry Price:</b> ₹{entry_price:,.2f}
+📈 <b>P&L Return:</b> {pnl_badge}
+📅 <b>Holding Period:</b> {days_held} day{'s' if days_held != 1 else ''}
 
-🛑 Stop Loss:
-• Old Trailing: ₹{old_trailing:,.2f}
-• New Trailing: ₹{new_trailing:,.2f} {trailing_changed}
+🛡️ <b>Trailing Stop Loss:</b>
+• Previous: ₹{old_trailing:,.2f}
+• Updated:  ₹{new_trailing:,.2f} ({trailing_status})
 
-⏰ Updated: {datetime.now().strftime('%Y-%m-%d %H:%M')}"""
+⏰ <i>{datetime.now().strftime('%d %b %Y, %H:%M IST')}</i>"""
     return msg
 
 def stop_loss_update_scan():
@@ -4000,11 +3982,11 @@ def stop_loss_update_scan():
     real_active = active_positions[real_active_mask]
     shadow_only = active_positions[~real_active_mask]
 
-    pre_scan_msg = f"🔄 <b>Stop-Loss Update Scan Starting</b>\n\n"
+    pre_scan_msg = f"🔄 <b>Portfolio Stop-Loss Scan Starting</b>\n\n"
     
     # 1. Real Active Positions
     if not real_active.empty:
-        pre_scan_msg += f"📊 <b>Active Positions to Update: {len(real_active)}</b>\n\n"
+        pre_scan_msg += f"📊 <b>Active Positions ({len(real_active)}):</b>\n\n"
         for idx, pos in real_active.iterrows():
             sym = pos["symbol"]
             entry_price = pos["entry_price"]
@@ -4024,24 +4006,29 @@ def stop_loss_update_scan():
             except:
                 days_held = "N/A"
             
-            # Calculate PnL
+            # Calculate PnL badge
             try:
                 pnl = ((current_price - entry_price) / entry_price * 100) if entry_price > 0 else 0
-                pnl_emoji = "📈" if pnl >= 0 else "📉"
+                pnl_abs = current_price - entry_price
+                if pnl > 0:
+                    pnl_badge = f"🟢 <b>+{pnl:.2f}%</b> (▲ +₹{pnl_abs:,.2f})"
+                elif pnl < 0:
+                    pnl_badge = f"🔴 <b>{pnl:.2f}%</b> (▼ ₹{pnl_abs:,.2f})"
+                else:
+                    pnl_badge = f"⚪ <b>0.00%</b>"
             except:
-                pnl = 0
-                pnl_emoji = "➡️"
+                pnl_badge = "⚪ <b>0.00%</b>"
             
             pre_scan_msg += f"""• <b>{sym}</b> ({grade})
-  💰 Entry: ₹{entry_price:,.2f} | Current: ₹{current_price:,.2f}
-  {pnl_emoji} P&L: {pnl:+.2f}% | 🛑 Stop: ₹{trailing_stop:,.2f}
-  📅 Days: {days_held}\n\n"""
+  💰 Entry: ₹{entry_price:,.2f} ➔ LTP: ₹{current_price:,.2f}
+  📈 Return: {pnl_badge}
+  🛡️ Trailing Stop: ₹{trailing_stop:,.2f} | 📅 Held: {days_held}d\n\n"""
     else:
         pre_scan_msg += "📊 <b>Active Positions to Update: 0</b>\n\n"
 
     # 2. Shadow-Only Tracking Positions
     if not shadow_only.empty:
-        pre_scan_msg += f"👥 <b>Shadow-Only Tracking (Closed): {len(shadow_only)}</b>\n\n"
+        pre_scan_msg += f"👥 <b>Shadow-Only Tracking ({len(shadow_only)}):</b>\n\n"
         for idx, pos in shadow_only.iterrows():
             sym = pos["symbol"]
             entry_price = pos["entry_price"]
@@ -4071,17 +4058,21 @@ def stop_loss_update_scan():
                 
             try:
                 pnl = ((current_price - entry_price) / entry_price * 100) if entry_price > 0 else 0
-                pnl_emoji = "📈" if pnl >= 0 else "📉"
+                if pnl > 0:
+                    pnl_badge = f"🟢 <b>+{pnl:.2f}%</b>"
+                elif pnl < 0:
+                    pnl_badge = f"🔴 <b>{pnl:.2f}%</b>"
+                else:
+                    pnl_badge = f"⚪ <b>0.00%</b>"
             except:
-                pnl = 0
-                pnl_emoji = "➡️"
+                pnl_badge = "⚪ <b>0.00%</b>"
                 
             pre_scan_msg += f"""• <b>{sym}</b> ({grade}) [CLOSED]
-  💰 Entry: ₹{entry_price:,.2f} | Last Close: ₹{current_price:,.2f}
-  {pnl_emoji} Close P&L: {pnl:+.2f}% | 📅 Total Days: {days_held}
+  💰 Entry: ₹{entry_price:,.2f} ➔ Close: ₹{current_price:,.2f}
+  📈 Close P&L: {pnl_badge} | 📅 Total Days: {days_held}
   👥 Tracking: {shadows_str}\n\n"""
 
-    pre_scan_msg += f"⏰ <b>Scan Time:</b> {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    pre_scan_msg += f"⏰ <i>{datetime.now().strftime('%d %b %Y, %H:%M IST')}</i>"
     send_telegram(pre_scan_msg)
     
     updates_made = 0
@@ -4834,14 +4825,8 @@ if __name__ == "__main__":
         from datetime import timezone, timedelta as td
         ist = timezone(td(hours=5, minutes=30))
         today_ist = datetime.now(ist).strftime("%Y-%m-%d")
-        skip_msg = (
-            f"📅 <b>Market Holiday / Non-Trading Day</b>\n\n"
-            f"🗓 Date: {today_ist}\n"
-            f"⏭ Scanner skipped — NSE is closed today.\n"
-            f"✅ Next scan will run on the next trading day."
-        )
         logger.info(f"📅 Market is closed today ({today_ist}). Skipping {args.mode} run.")
-        send_telegram(skip_msg)
+        send_holiday_notification_once(f"daily_scanner_{args.mode}", today_ist, send_telegram)
         sys.exit(0)
     # --- End Holiday Guard ---
 
