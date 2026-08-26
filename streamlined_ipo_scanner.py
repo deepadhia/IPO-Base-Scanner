@@ -606,7 +606,6 @@ NSE_HOLIDAYS = {
     "2026-05-28",  # Bakri Id
     "2026-06-26",  # Muharram
     "2026-08-15",  # Independence Day
-    "2026-08-26",  # Id-E-Milad
     "2026-09-14",  # Ganesh Chaturthi
     "2026-10-02",  # Mahatma Gandhi Jayanti
     "2026-10-20",  # Dussehra
