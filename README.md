@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Version](https://img.shields.io/badge/version-3.4.0-orange.svg)](https://github.com/Deep-Adhia/IPO-Base-Scanner)
+[![Version](https://img.shields.io/badge/version-3.5.0-orange.svg)](https://github.com/Deep-Adhia/IPO-Base-Scanner)
 [![Automated](https://img.shields.io/badge/automation-GitHub%20Actions-green.svg)](https://github.com/features/actions)
 
 This is **not** a simple breakout scanner.
@@ -570,12 +570,48 @@ For experiment cutovers and baseline tracking, see `EXPERIMENT_CHANGELOG.md`.
 🤖 Scanner v3.3.0 | 14:15 IST
 ```
 
+## 🔬 Trade Forensics & Self-Diagnosing Quality Engine (`diagnose_trade.py`)
+
+The repository includes a reusable, production-grade **Trade Forensics & Strategy Evidence Engine** that analyzes individual stock setups, compares them against top-performing winners, and runs system-wide self-diagnostics to uncover what is working and what is leaking.
+
+### 1. Persistent Strategy Evidence (`strategy_evidence` MongoDB collection)
+* Pairs granular setup DNA (volume surge multiplier, PRNG 10d base tightness %, upper wick rejection %, daily turnover) directly with real trade outcomes (PnL %, max runup, holding period, exit reasons).
+* Tracks hypotheses under test (e.g. 60-min Intraday Cutoff, 14-day Stagnant Exit, SuperTrend Trailing for >3x volume surge).
+
+### 2. Available Forensic CLI Commands
+
+```powershell
+# 1. Run full System-Wide Self-Diagnosis (Strengths, Weaknesses, Hypotheses & Edge Directives)
+python diagnose_trade.py --system
+
+# 2. Synchronize all trade forensics into MongoDB collection 'strategy_evidence'
+python diagnose_trade.py --sync-evidence
+
+# 3. Diagnose individual trades with Strengths, Weaknesses, Waterfall Checklist & Root Cause
+python diagnose_trade.py KUSUMGAR CMRGREEN
+
+# 4. Compare setups side-by-side against active top breakout winners
+python diagnose_trade.py KUSUMGAR CMRGREEN --vs-winners
+
+# 5. Diagnose all currently active portfolio positions
+python diagnose_trade.py --active-only
+
+# 6. Run via unified MongoDB management entrypoint
+python manage_db.py diagnose --system
+python manage_db.py diagnose --symbols KUSUMGAR CMRGREEN --vs-winners
+```
+
+### 3. Clean-Cohort Baseline (`2026-07-05`)
+All statistics, analytics scripts, and strategy evidence are strictly bounded to the **`2026-07-05` Clean Cohort Baseline** (v3.3.0 parameter tightening). Pre-clean-cohort legacy trades (Grade C, wide 40–120d windows, penny stocks) are safely stored in `positions_legacy_archive` and `signals_legacy_archive` to guarantee zero statistical distortion in active production models.
+
 ---
 
 ## 📋 Version History
 
 | Version | Date | Key Changes |
 |---|---|---|
+| **v3.5.0** | 2026-08-29 | **Robust Price Action & Velocity Engine:** (1) Upper 50% Candle Body Confirmation Gate (`(CLOSE-LOW)/(HIGH-LOW) >= 0.50`), (2) 14-Day Velocity Speed Gate with Volume Decay verification, (3) Max 8% Extension Anti-Chasing Ceiling, (4) Immediate Base Peak Re-Entry Trigger, (5) Persistent Strategy Evidence Store. |
+| **v3.4.0** | 2026-08-29 | **Trade Forensics & Strategy Evidence Store:** Added `diagnose_trade.py` and `core/strategy_evidence.py` for persistent strategy proof, 4-quadrant self-diagnostics, safe archive migration (`positions_legacy_archive`), and hard clean-cohort guards across all statistical scripts. |
 | **v3.4.0** | 2026-07-11 | **Re-Entry Breakouts:** Continuous peak price tracking, dynamic re-entry triggers (bypassing strict DNA filters while enforcing liquidity floors), DB backfill migration, and PAPER_ONLY caps for re-entries. |
 | **v3.3.0** | 2026-06-07 | Listing volume floor (≥150k shares), base-duration floor (≥3d), 20-day patience stop, Limit Buy order instructions in alerts, `position_version` log field for cohort separation |
 | **v2.5.0** | 2026-04-23 | MongoDB-only architecture, winner trait classification, forensic audit mode, master_audit.py |
@@ -593,4 +629,4 @@ For experiment cutovers and baseline tracking, see `EXPERIMENT_CHANGELOG.md`.
 
 ---
 
-<sub>Built for systematic IPO momentum trading | v3.4.0 | Automated via GitHub Actions + Cloudflare Worker Dispatcher | MongoDB Atlas Infrastructure | Data-Driven Filter Optimization</sub>
+<sub>Built for systematic IPO momentum trading | v3.5.0 | Automated via GitHub Actions + Cloudflare Worker Dispatcher | MongoDB Atlas Infrastructure | Data-Driven Filter Optimization</sub>

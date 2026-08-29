@@ -15,11 +15,14 @@ def run_script(script_name, args=None):
 
 def main():
     parser = argparse.ArgumentParser(description="IPO Scanner MongoDB Management Tool")
-    parser.add_argument("task", choices=["test", "backfill-all", "validate", "backup", "analyze", "quality", "recent", "backtest"], 
+    parser.add_argument("task", choices=["test", "backfill-all", "validate", "backup", "analyze", "quality", "recent", "backtest", "diagnose"], 
                         help="Task to perform")
     parser.add_argument("--today", action="store_true", help="For validation: logs only for today")
     parser.add_argument("--days", type=int, default=3, help="For analysis/quality/recent: number of days")
     parser.add_argument("--limit", type=int, default=20, help="For recent: max number of logs")
+    parser.add_argument("--symbols", nargs="+", help="For diagnose: symbols to analyze (e.g. KUSUMGAR CMRGREEN)")
+    parser.add_argument("--vs-winners", action="store_true", help="For diagnose: compare with winning breakouts")
+    parser.add_argument("--system", action="store_true", help="For diagnose: run system-wide strategy self-diagnosis")
 
     args = parser.parse_args()
 
@@ -53,6 +56,16 @@ def main():
 
     elif args.task == "backtest":
         run_script("run_latest_rules_backtest.py")
+
+    elif args.task == "diagnose":
+        d_args = []
+        if args.system:
+            d_args.append("--system")
+        if args.symbols:
+            d_args.extend(args.symbols)
+        if args.vs_winners:
+            d_args.append("--vs-winners")
+        run_script("diagnose_trade.py", d_args)
 
 if __name__ == "__main__":
     main()

@@ -8,6 +8,17 @@ Run this before deploying to confirm nothing is broken.
 import sys
 import os
 
+if hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+if hasattr(sys.stderr, 'reconfigure'):
+    try:
+        sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
 print("=" * 60)
 print("🔍 IPO Scanner Logic Verification")
 print("=" * 60)

@@ -12,7 +12,7 @@ Optimized IPO breakout scanner:
 - Dry-run and heartbeat modes
 """
 
-SCANNER_VERSION = "3.4.0"  # v3.4.0: Re-Entry Breakouts, Peak Price Tracking, Paper Cap Handling
+SCANNER_VERSION = "3.5.0"  # v3.5.0: Upper 50% Candle Body Gate, 14-Day Velocity Gate, Anti-Chasing Extension Guard
 LOG_SCHEMA_VERSION = "2026-04-23.v1"
 
 import os
@@ -836,11 +836,11 @@ MIN_LIVE_GRADE = os.getenv("MIN_LIVE_GRADE", "B") # 2026-07-05: raised from C â†
 MAX_ACTIVE_POSITIONS = get_env_int("MAX_ACTIVE_POSITIONS", 5)
 HARD_ACTIVE_POSITIONS = get_env_int("HARD_ACTIVE_POSITIONS", MAX_ACTIVE_POSITIONS + 2)
 
-# Dead-money speed gate thresholds by archetype
-DEAD_MONEY_DAYS_IPO = get_env_int("DEAD_MONEY_DAYS_IPO", 20)
+# Dead-money speed gate thresholds by archetype (v3.5.0: Tightened to 14 days)
+DEAD_MONEY_DAYS_IPO = get_env_int("DEAD_MONEY_DAYS_IPO", 14)
 DEAD_MONEY_RUNUP_IPO = get_env_float("DEAD_MONEY_RUNUP_IPO", 4.0)
 
-DEAD_MONEY_DAYS_CONSOL = get_env_int("DEAD_MONEY_DAYS_CONSOL", 21)
+DEAD_MONEY_DAYS_CONSOL = get_env_int("DEAD_MONEY_DAYS_CONSOL", 14)
 DEAD_MONEY_RUNUP_CONSOL = get_env_float("DEAD_MONEY_RUNUP_CONSOL", 5.0)
 
 DEAD_MONEY_DAYS_OTHER = get_env_int("DEAD_MONEY_DAYS_OTHER", 30)

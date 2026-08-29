@@ -37,7 +37,7 @@ db_metrics = {
 }
 
 # Versioning and Safeguards
-SCANNER_VERSION = "3.4.0"  # v3.4.0: Re-Entry Breakouts, Peak Price Tracking, Paper Cap Handling
+SCANNER_VERSION = "3.5.0"  # v3.5.0: Upper 50% Candle Body Gate, 14-Day Velocity Gate, Anti-Chasing Extension Guard
 MAX_DAILY_REJECTIONS = 500
 _rejection_guard_warned = False
 
@@ -475,8 +475,11 @@ def get_all_positions_df(status: str = None):
         if status:
             query["status"] = status
         
+        CLEAN_COHORT_START = "2026-07-05"
+
         # 1. Get from positions collection
-        pos_docs = list(positions_col.find(query, {"_id": 0}))
+        pos_docs_raw = list(positions_col.find(query, {"_id": 0}))
+        pos_docs = [p for p in pos_docs_raw if str(p.get("entry_date") or p.get("created_at") or "")[:10] >= CLEAN_COHORT_START]
         
         # 2. Get from signals collection (Phase 2.2 migration path)
         # We look for records where lifecycle_state is POSITION_ACTIVE or status is ACTIVE
@@ -488,7 +491,8 @@ def get_all_positions_df(status: str = None):
         else:
             sig_query = {}
             
-        sig_docs = list(signals_col.find(sig_query, {"_id": 0}))
+        sig_docs_raw = list(signals_col.find(sig_query, {"_id": 0}))
+        sig_docs = [s for s in sig_docs_raw if str(s.get("signal_date") or s.get("created_at") or "")[:10] >= CLEAN_COHORT_START]
         
         # Tag sources to prioritize positions_col records during deduplication
         for d in pos_docs:

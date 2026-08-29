@@ -42,17 +42,27 @@ print("  IPO Base Scanner — DB Quality & Winner Pattern Analysis")
 print("  Run at:", datetime.now().strftime("%Y-%m-%d %H:%M IST"))
 print("="*80)
 
-signals_raw  = list(db.signals.find({}, {"_id": 0}))
-positions_raw = list(db.positions.find({}, {"_id": 0}))
-v2_raw       = list(db.signals_v2.find({}, {"_id": 0}))
+# Enforce Clean-Cohort Filter (July 5, 2026 Parameter Tightening)
+CLEAN_COHORT_START = "2026-07-05"
+
+signals_raw_all  = list(db.signals.find({}, {"_id": 0}))
+positions_raw_all = list(db.positions.find({}, {"_id": 0}))
+v2_raw_all       = list(db.signals_v2.find({}, {"_id": 0}))
+
+def extract_v2_date(v):
+    return str(v.get("signal_date") or (v.get("signal_metadata") or {}).get("signal_date") or v.get("created_at") or "")[:10]
+
+signals_raw   = [s for s in signals_raw_all if str(s.get("signal_date") or s.get("created_at") or "")[:10] >= CLEAN_COHORT_START]
+positions_raw = [p for p in positions_raw_all if str(p.get("entry_date") or p.get("created_at") or "")[:10] >= CLEAN_COHORT_START]
+v2_raw        = [v for v in v2_raw_all if extract_v2_date(v) >= CLEAN_COHORT_START]
 
 df_sig  = pd.DataFrame(signals_raw)
 df_pos  = pd.DataFrame(positions_raw)
 df_v2   = pd.DataFrame(v2_raw)
 
-print(f"\n[DB] signals    : {len(df_sig)} documents")
-print(f"[DB] positions  : {len(df_pos)} documents")
-print(f"[DB] signals_v2 : {len(df_v2)} documents")
+print(f"\n[DB Clean Cohort] signals    : {len(df_sig)} documents (>= {CLEAN_COHORT_START})")
+print(f"[DB Clean Cohort] positions  : {len(df_pos)} documents (>= {CLEAN_COHORT_START})")
+print(f"[DB Clean Cohort] signals_v2 : {len(df_v2)} documents (>= {CLEAN_COHORT_START})")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SECTION 1: DB Quality — field coverage

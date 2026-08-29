@@ -20,10 +20,14 @@ def analyze_institutional_expectancy():
     # 1. Load Data
     client = MongoClient(os.getenv("MONGO_URI"))
     db = client['ipo_scanner_v2']
-    signals = list(db.signals.find()) # Main collection enriched by backfill
+    raw_signals = list(db.signals.find()) # Main collection enriched by backfill
+
+    # Enforce clean-cohort filter (July 5, 2026 parameter tightening)
+    CLEAN_COHORT_START = "2026-07-05"
+    signals = [s for s in raw_signals if str(s.get("signal_date") or s.get("created_at") or "")[:10] >= CLEAN_COHORT_START]
 
     if not signals:
-        print("X No signals found in MongoDB collection 'signals'.")
+        print("X No clean-cohort signals found in MongoDB collection 'signals'.")
         return
 
     df = pd.DataFrame(signals)
@@ -48,9 +52,20 @@ def analyze_institutional_expectancy():
     df['pnl_pct'] = pd.to_numeric(df['pnl_pct'], errors='coerce').fillna(0)
     
     # Ensure metadata fields exist
-    df['market_regime'] = df['market_regime'].fillna('UNKNOWN')
-    df['pattern_type'] = df['pattern_type'].fillna('UNKNOWN')
-    df['grade'] = df['grade'].fillna('N/A')
+    if 'market_regime' not in df.columns:
+        df['market_regime'] = 'UNKNOWN'
+    else:
+        df['market_regime'] = df['market_regime'].fillna('UNKNOWN')
+
+    if 'pattern_type' not in df.columns:
+        df['pattern_type'] = df.get('scanner', df.get('grade', 'LISTING_BREAKOUT'))
+    else:
+        df['pattern_type'] = df['pattern_type'].fillna('LISTING_BREAKOUT')
+
+    if 'grade' not in df.columns:
+        df['grade'] = 'N/A'
+    else:
+        df['grade'] = df['grade'].fillna('N/A')
 
     # Filter for closed/concluded trades for expectancy
     concluded = df[df['is_win'].notna()].copy()

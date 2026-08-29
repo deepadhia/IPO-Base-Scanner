@@ -62,7 +62,7 @@ if send_holiday_notification_once is None:
     from utils import send_holiday_notification_once
 write_daily_log = scanner_module.write_daily_log  # Use shared writer — prevents version drift
 
-SCANNER_VERSION = "3.4.0"  # v3.4.0: Re-Entry Breakouts, Peak Price Tracking, Paper Cap Handling
+SCANNER_VERSION = "3.5.0"  # v3.5.0: Upper 50% Candle Body Gate, 14-Day Velocity Gate, Anti-Chasing Extension Guard
 
 # write_daily_log is now imported from scanner_module above (shared writer).
 

@@ -259,10 +259,10 @@ def run_analysis(start_date=None, version_filter=None, rejection_days=10, clean_
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run quantitative IPO scanner analysis with non-destructive filters.")
-    parser.add_argument("--start-date", type=str, default=None, help="Include rows from this date onward (YYYY-MM-DD).")
+    parser.add_argument("--start-date", type=str, default="2026-07-05", help="Include rows from this date onward (YYYY-MM-DD). Defaults to 2026-07-05 clean cohort.")
     parser.add_argument("--version", type=str, default=None, help="Optional version filter, e.g. 2.1.0.")
     parser.add_argument("--rejection-days", type=int, default=10, help="Lookback days for rejection analysis when start-date is not provided.")
-    parser.add_argument("--clean-cohort", action="store_true", help="Exclude WATCHLIST and LOW_VOL signal cohorts from analysis scope.")
+    parser.add_argument("--clean-cohort", action="store_true", default=True, help="Exclude WATCHLIST and LOW_VOL signal cohorts from analysis scope.")
     args = parser.parse_args()
 
     parsed_start = None

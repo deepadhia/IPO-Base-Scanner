@@ -46,7 +46,7 @@ scanner_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(scanner_module)
 
 # Import version and logging utilities from main scanner
-SCANNER_VERSION = "3.4.0"  # v3.4.0: Re-Entry Breakouts, Peak Price Tracking, Paper Cap Handling
+SCANNER_VERSION = "3.5.0"  # v3.5.0: Upper 50% Candle Body Gate, 14-Day Velocity Gate, Anti-Chasing Extension Guard
 write_daily_log = getattr(scanner_module, 'write_daily_log', lambda *a, **k: None)
 
 fetch_data = scanner_module.fetch_data
@@ -1478,6 +1478,27 @@ def check_listing_day_breakout(symbol, listing_info, pending_breakouts=None, bul
                         )
                         logger.info(f"Skipping {symbol}: {rejection_reason}")
                         return None
+                # --- Upper 50% Candle Body Gate (v3.5.0 Anti-Rejection / Anti-Trap Rule) ---
+                # Breakout candle must close in the upper half of its range ((CLOSE - LOW) / (HIGH - LOW) >= 0.50).
+                # This eliminates long shooting stars / heavy upper rejection wicks (e.g. KUSUMGAR).
+                current_low = float(latest['LOW']) if 'LOW' in latest else current_price
+                candle_range = current_high - current_low
+                if candle_range > 0 and signal_type in ('BREAKOUT', 'BASE_BREAKOUT'):
+                    close_location = (current_price - current_low) / candle_range
+                    if close_location < 0.50:
+                        rejection_reason = (
+                            f"Upper wick exhaustion / selling rejection: candle close location {close_location*100:.1f}% "
+                            f"< 50.0% of daily range (High: {current_high:.2f}, Low: {current_low:.2f}, Close: {current_price:.2f})"
+                        )
+                        logger.info(f"⏭️ Skipping {symbol}: {rejection_reason}")
+                        _log_listing_rejection(
+                            reason="upper_wick_rejection",
+                            value=round(close_location * 100, 1),
+                            threshold=50.0,
+                            metrics={"close_location_pct": round(close_location * 100, 1)}
+                        )
+                        return None
+
                 # Passed strict checks — treat as high-quality (no LOW_VOL grade)
                 volume_warnings = []
             
