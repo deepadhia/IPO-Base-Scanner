@@ -100,8 +100,37 @@ def sync_all_trade_evidence(db, fetch_data_fn=None) -> int:
         is_concluded = status in ["CLOSED", "PAPER_CLOSED"]
         is_win = pnl_pct > 0.0
 
+        # Archetype and Takeaway Forensics
+        archetype = "STANDARD_BREAKOUT"
+        failure_reason = None
+        algo_takeaway = ""
+
+        if is_win:
+            if pnl_pct >= 10.0 and vol_spike >= 3.0:
+                archetype = "HIGH_VOL_MOMENTUM_RUNNER"
+                algo_takeaway = f"Institutional volume expansion ({vol_spike:.1f}x) drove strong follow-through (+{pnl_pct:.1f}%). Trail with SuperTrend to maximize gains."
+            elif pnl_pct >= 10.0 and prng_10d <= 15.0:
+                archetype = "TIGHT_BASE_COMPOUNDER"
+                algo_takeaway = f"Tight base coil ({prng_10d:.1f}% PRNG) allowed low-risk entry with +{pnl_pct:.1f}% return."
+            else:
+                archetype = "MODERATE_GAIN_TRADE"
+                algo_takeaway = f"Solid breakout follow-through (+{pnl_pct:.1f}%). Protect with trailing stop."
+        else:
+            if upper_wick_pct >= 35.0:
+                archetype = "UPPER_WICK_SUPPLY_TRAP"
+                failure_reason = f"Breakout closed with {upper_wick_pct:.1f}% upper wick; heavy institutional supply rejection."
+                algo_takeaway = "Upper 50% Candle Body Gate structurally filters out this intraday supply trap."
+            elif days_held >= 14:
+                archetype = "STAGNANT_DEAD_MONEY_BLEED"
+                failure_reason = f"Position held {days_held:.0f} days with negative return ({pnl_pct:.1f}%); momentum decay."
+                algo_takeaway = "14-Day Velocity Speed Gate exits this position early to prevent prolonged capital tie-up."
+            else:
+                archetype = "EARLY_FALSE_BREAKOUT"
+                failure_reason = f"Breakout failed follow-through ({pnl_pct:.1f}%)."
+                algo_takeaway = "Standard risk stop limited downside."
+
         # Cohort tagging
-        cohorts = []
+        cohorts = [archetype]
         if vol_spike >= 3.0:
             cohorts.append("HIGH_VOLUME_BURST")
         elif vol_spike >= 1.5:
@@ -148,6 +177,11 @@ def sync_all_trade_evidence(db, fetch_data_fn=None) -> int:
                 "exit_reason": exit_reason,
                 "is_concluded": is_concluded,
                 "is_win": is_win
+            },
+            "forensics": {
+                "archetype": archetype,
+                "failure_reason": failure_reason,
+                "algo_takeaway": algo_takeaway
             },
             "cohort_labels": cohorts,
             "updated_at": now_utc
