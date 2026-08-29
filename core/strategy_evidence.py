@@ -29,6 +29,184 @@ class Colors:
     END = '\033[0m'
 
 
+def build_trade_evidence_doc(pos: dict, db=None, fetch_data_fn=None) -> dict:
+    """
+    Builds a granular forensic evidence document pairing setup DNA with empirical trade outcome.
+    """
+    sym = pos.get("symbol")
+    entry_date = str(pos.get("entry_date", ""))[:10]
+    evidence_id = f"EV_{sym}_{entry_date.replace('-', '')}"
+    
+    status = pos.get("status", "UNKNOWN")
+    grade = pos.get("grade", "N/A")
+    entry_price = float(pos.get("entry_price") or 0)
+    current_price = float(pos.get("current_price") or entry_price)
+    pnl_pct = float(pos.get("pnl_pct") or 0)
+    max_runup = float(pos.get("max_runup_pct") or max(0, pnl_pct))
+    max_drawdown = float(pos.get("max_drawdown_pct") or min(0, pnl_pct))
+    days_held = float(pos.get("days_held") or 0)
+    peak_price = float(pos.get("peak_price_during_trade") or current_price)
+    exit_reason = pos.get("exit_reason")
+
+    # Find matching signal for extra metadata if available
+    sig = {}
+    if db is not None:
+        try:
+            signals_col = db["signals"]
+            sig = signals_col.find_one({"symbol": sym, "signal_date": {"$regex": entry_date[:7]}}) or {}
+        except Exception:
+            pass
+
+    market_regime = sig.get("market_regime") or pos.get("market_regime") or "BULL"
+    vol_spike = float(sig.get("volume_spike") or sig.get("volume_ratio") or pos.get("volume_ratio") or 1.5)
+
+    # Defaults
+    prng_10d = float(pos.get("consolidation_range_pct") or sig.get("consolidation_range_pct") or 12.0)
+    upper_wick_pct = float(pos.get("upper_wick_pct") or 15.0)
+    turnover_cr = float(pos.get("turnover_cr") or 5.0)
+    listing_vol = int(pos.get("listing_day_volume") or 1_000_000)
+
+    if fetch_data_fn:
+        try:
+            df = fetch_data_fn(sym, "2025-01-01")
+            if df is not None and not df.empty:
+                df.columns = [c.upper() for c in df.columns]
+                listing_vol = int(df['VOLUME'].iloc[0]) if 'VOLUME' in df.columns else listing_vol
+                r10 = df.tail(10)
+                r10_l = float(r10['LOW'].min()) if len(r10) > 0 else 1.0
+                r10_h = float(r10['HIGH'].max()) if len(r10) > 0 else 1.0
+                last_c = df.iloc[-1]
+                c_range = last_c['HIGH'] - last_c['LOW']
+                if c_range > 0:
+                    u_wick = last_c['HIGH'] - max(last_c['OPEN'], last_c['CLOSE'])
+                    upper_wick_pct = round((u_wick / c_range) * 100.0, 1)
+
+                r20_vol = float(df['VOLUME'].tail(20).mean()) if 'VOLUME' in df.columns else 100_000
+                recent_max_vol = float(df['VOLUME'].tail(20).max()) if 'VOLUME' in df.columns else 0.0
+                vol_spike = round((recent_max_vol / r20_vol), 2) if r20_vol > 0 else vol_spike
+                turnover_cr = round((r20_vol * current_price) / 10_000_000.0, 1)
+        except Exception:
+            pass
+
+    # Outcome classification
+    is_concluded = status in ["CLOSED", "PAPER_CLOSED"]
+    is_win = pnl_pct > 0.0
+
+    # Archetype and Takeaway Forensics
+    archetype = "STANDARD_BREAKOUT"
+    failure_reason = None
+    algo_takeaway = ""
+
+    if is_win:
+        if pnl_pct >= 10.0 and vol_spike >= 3.0:
+            archetype = "HIGH_VOL_MOMENTUM_RUNNER"
+            algo_takeaway = f"Institutional volume expansion ({vol_spike:.1f}x) drove strong follow-through (+{pnl_pct:.1f}%). Trail with SuperTrend to maximize gains."
+        elif pnl_pct >= 10.0 and prng_10d <= 15.0:
+            archetype = "TIGHT_BASE_COMPOUNDER"
+            algo_takeaway = f"Tight base coil ({prng_10d:.1f}% PRNG) allowed low-risk entry with +{pnl_pct:.1f}% return."
+        else:
+            archetype = "MODERATE_GAIN_TRADE"
+            algo_takeaway = f"Solid breakout follow-through (+{pnl_pct:.1f}%). Protect with trailing stop."
+    else:
+        if upper_wick_pct >= 35.0:
+            archetype = "UPPER_WICK_SUPPLY_TRAP"
+            failure_reason = f"Breakout closed with {upper_wick_pct:.1f}% upper wick; heavy institutional supply rejection."
+            algo_takeaway = "Upper 50% Candle Body Gate structurally filters out this intraday supply trap."
+        elif days_held >= 14:
+            archetype = "STAGNANT_DEAD_MONEY_BLEED"
+            failure_reason = f"Position held {days_held:.0f} days with negative return ({pnl_pct:.1f}%); momentum decay."
+            algo_takeaway = "14-Day Velocity Speed Gate exits this position early to prevent prolonged capital tie-up."
+        else:
+            archetype = "EARLY_FALSE_BREAKOUT"
+            failure_reason = f"Breakout failed follow-through ({pnl_pct:.1f}%)."
+            algo_takeaway = "Standard risk stop limited downside."
+
+    cohorts = [archetype]
+    if vol_spike >= 3.0:
+        cohorts.append("HIGH_VOLUME_BURST")
+    elif vol_spike >= 1.5:
+        cohorts.append("MODERATE_VOLUME_SPIKE")
+    else:
+        cohorts.append("LOW_VOLUME_WEAK")
+
+    if prng_10d <= 15.0:
+        cohorts.append("TIGHT_BASE")
+    elif prng_10d <= 25.0:
+        cohorts.append("NORMAL_BASE")
+    else:
+        cohorts.append("WIDE_LOOSE_BASE")
+
+    if upper_wick_pct >= 35.0:
+        cohorts.append("HIGH_UPPER_WICK_REJECTION")
+
+    if is_win and pnl_pct >= 10.0:
+        cohorts.append("PROVEN_BIG_WINNER")
+    elif not is_win and is_concluded:
+        cohorts.append("STOPPED_OUT_LOSER")
+
+    doc = {
+        "evidence_id": evidence_id,
+        "symbol": sym,
+        "entry_date": entry_date,
+        "grade": grade,
+        "setup_dna": {
+            "listing_vol": listing_vol,
+            "volume_spike": vol_spike,
+            "prng_10d_pct": prng_10d,
+            "upper_wick_pct": upper_wick_pct,
+            "turnover_cr": turnover_cr,
+            "market_regime": market_regime
+        },
+        "outcome": {
+            "status": status,
+            "entry_price": entry_price,
+            "current_price": current_price,
+            "peak_price": peak_price,
+            "pnl_pct": round(pnl_pct, 2),
+            "max_runup_pct": round(max_runup, 2),
+            "max_drawdown_pct": round(max_drawdown, 2),
+            "days_held": days_held,
+            "exit_reason": exit_reason,
+            "is_concluded": is_concluded,
+            "is_win": is_win
+        },
+        "forensics": {
+            "archetype": archetype,
+            "failure_reason": failure_reason,
+            "algo_takeaway": algo_takeaway
+        },
+        "cohort_labels": cohorts,
+        "updated_at": datetime.now(timezone.utc)
+    }
+    return doc
+
+
+def record_trade_closure_evidence(pos: dict, db=None, fetch_data_fn=None) -> bool:
+    """
+    Persists a single trade's forensic evidence doc directly to MongoDB `strategy_evidence`.
+    """
+    if db is None:
+        try:
+            from db import db as default_db
+            db = default_db
+        except Exception:
+            pass
+    if db is None:
+        return False
+    try:
+        doc = build_trade_evidence_doc(pos, db=db, fetch_data_fn=fetch_data_fn)
+        evidence_col = db["strategy_evidence"]
+        evidence_col.update_one(
+            {"evidence_id": doc["evidence_id"]},
+            {"$set": doc},
+            upsert=True
+        )
+        return True
+    except Exception as e:
+        print(f"⚠️ Error recording trade closure evidence: {e}")
+        return False
+
+
 def sync_all_trade_evidence(db, fetch_data_fn=None) -> int:
     """
     Ingests all clean-cohort positions and historical trades into `strategy_evidence`.
@@ -39,155 +217,22 @@ def sync_all_trade_evidence(db, fetch_data_fn=None) -> int:
 
     positions_col = db["positions"]
     evidence_col = db["strategy_evidence"]
-    signals_col = db["signals"]
 
     positions = list(positions_col.find({}))
     if not positions:
         return 0
 
-    now_utc = datetime.now(timezone.utc)
     synced_count = 0
-
     for pos in positions:
-        sym = pos.get("symbol")
-        entry_date = str(pos.get("entry_date", ""))[:10]
-        evidence_id = f"EV_{sym}_{entry_date.replace('-', '')}"
-        
-        status = pos.get("status", "UNKNOWN")
-        grade = pos.get("grade", "N/A")
-        entry_price = float(pos.get("entry_price") or 0)
-        current_price = float(pos.get("current_price") or entry_price)
-        pnl_pct = float(pos.get("pnl_pct") or 0)
-        max_runup = float(pos.get("max_runup_pct") or max(0, pnl_pct))
-        days_held = float(pos.get("days_held") or 0)
-        peak_price = float(pos.get("peak_price_during_trade") or current_price)
-        exit_reason = pos.get("exit_reason")
-
-        # Find matching signal for extra metadata if available
-        sig = signals_col.find_one({"symbol": sym, "signal_date": {"$regex": entry_date[:7]}}) or {}
-        market_regime = sig.get("market_regime") or pos.get("market_regime") or "BULL"
-        vol_spike = float(sig.get("volume_spike") or sig.get("volume_ratio") or 1.5)
-
-        # Attempt to compute precise candle metrics via fetch_data if provided
-        prng_10d = 12.0
-        upper_wick_pct = 15.0
-        turnover_cr = 5.0
-        listing_vol = 1_000_000
-
-        if fetch_data_fn:
-            try:
-                df = fetch_data_fn(sym, "2025-01-01")
-                if df is not None and not df.empty:
-                    df.columns = [c.upper() for c in df.columns]
-                    listing_vol = int(df['VOLUME'].iloc[0]) if 'VOLUME' in df.columns else 1_000_000
-                    r10 = df.tail(10)
-                    r10_l = float(r10['LOW'].min()) if len(r10) > 0 else 1.0
-                    r10_h = float(r10['HIGH'].max()) if len(r10) > 0 else 1.0
-                    last_c = df.iloc[-1]
-                    c_range = last_c['HIGH'] - last_c['LOW']
-                    if c_range > 0:
-                        u_wick = last_c['HIGH'] - max(last_c['OPEN'], last_c['CLOSE'])
-                        upper_wick_pct = round((u_wick / c_range) * 100.0, 1)
-
-                    r20_vol = float(df['VOLUME'].tail(20).mean()) if 'VOLUME' in df.columns else 100_000
-                    recent_max_vol = float(df['VOLUME'].tail(20).max()) if 'VOLUME' in df.columns else 0.0
-                    vol_spike = round((recent_max_vol / r20_vol), 2) if r20_vol > 0 else vol_spike
-                    turnover_cr = round((r20_vol * current_price) / 10_000_000.0, 1)
-            except Exception:
-                pass
-
-        # Outcome classification
-        is_concluded = status in ["CLOSED", "PAPER_CLOSED"]
-        is_win = pnl_pct > 0.0
-
-        # Archetype and Takeaway Forensics
-        archetype = "STANDARD_BREAKOUT"
-        failure_reason = None
-        algo_takeaway = ""
-
-        if is_win:
-            if pnl_pct >= 10.0 and vol_spike >= 3.0:
-                archetype = "HIGH_VOL_MOMENTUM_RUNNER"
-                algo_takeaway = f"Institutional volume expansion ({vol_spike:.1f}x) drove strong follow-through (+{pnl_pct:.1f}%). Trail with SuperTrend to maximize gains."
-            elif pnl_pct >= 10.0 and prng_10d <= 15.0:
-                archetype = "TIGHT_BASE_COMPOUNDER"
-                algo_takeaway = f"Tight base coil ({prng_10d:.1f}% PRNG) allowed low-risk entry with +{pnl_pct:.1f}% return."
-            else:
-                archetype = "MODERATE_GAIN_TRADE"
-                algo_takeaway = f"Solid breakout follow-through (+{pnl_pct:.1f}%). Protect with trailing stop."
-        else:
-            if upper_wick_pct >= 35.0:
-                archetype = "UPPER_WICK_SUPPLY_TRAP"
-                failure_reason = f"Breakout closed with {upper_wick_pct:.1f}% upper wick; heavy institutional supply rejection."
-                algo_takeaway = "Upper 50% Candle Body Gate structurally filters out this intraday supply trap."
-            elif days_held >= 14:
-                archetype = "STAGNANT_DEAD_MONEY_BLEED"
-                failure_reason = f"Position held {days_held:.0f} days with negative return ({pnl_pct:.1f}%); momentum decay."
-                algo_takeaway = "14-Day Velocity Speed Gate exits this position early to prevent prolonged capital tie-up."
-            else:
-                archetype = "EARLY_FALSE_BREAKOUT"
-                failure_reason = f"Breakout failed follow-through ({pnl_pct:.1f}%)."
-                algo_takeaway = "Standard risk stop limited downside."
-
-        # Cohort tagging
-        cohorts = [archetype]
-        if vol_spike >= 3.0:
-            cohorts.append("HIGH_VOLUME_BURST")
-        elif vol_spike >= 1.5:
-            cohorts.append("MODERATE_VOLUME_SPIKE")
-        else:
-            cohorts.append("LOW_VOLUME_WEAK")
-
-        if prng_10d <= 15.0:
-            cohorts.append("TIGHT_BASE")
-        elif prng_10d <= 25.0:
-            cohorts.append("NORMAL_BASE")
-        else:
-            cohorts.append("WIDE_LOOSE_BASE")
-
-        if upper_wick_pct >= 35.0:
-            cohorts.append("HIGH_UPPER_WICK_REJECTION")
-
-        if is_win and pnl_pct >= 10.0:
-            cohorts.append("PROVEN_BIG_WINNER")
-        elif not is_win and is_concluded:
-            cohorts.append("STOPPED_OUT_LOSER")
-
-        doc = {
-            "evidence_id": evidence_id,
-            "symbol": sym,
-            "entry_date": entry_date,
-            "grade": grade,
-            "setup_dna": {
-                "listing_vol": listing_vol,
-                "volume_spike": vol_spike,
-                "prng_10d_pct": prng_10d,
-                "upper_wick_pct": upper_wick_pct,
-                "turnover_cr": turnover_cr,
-                "market_regime": market_regime
-            },
-            "outcome": {
-                "status": status,
-                "entry_price": entry_price,
-                "current_price": current_price,
-                "peak_price": peak_price,
-                "pnl_pct": round(pnl_pct, 2),
-                "max_runup_pct": round(max_runup, 2),
-                "days_held": days_held,
-                "exit_reason": exit_reason,
-                "is_concluded": is_concluded,
-                "is_win": is_win
-            },
-            "forensics": {
-                "archetype": archetype,
-                "failure_reason": failure_reason,
-                "algo_takeaway": algo_takeaway
-            },
-            "cohort_labels": cohorts,
-            "updated_at": now_utc
-        }
-
+        doc = build_trade_evidence_doc(pos, db=db, fetch_data_fn=fetch_data_fn)
         evidence_col.update_one(
+            {"evidence_id": doc["evidence_id"]},
+            {"$set": doc},
+            upsert=True
+        )
+        synced_count += 1
+
+    return synced_count
             {"evidence_id": evidence_id},
             {"$set": doc},
             upsert=True

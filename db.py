@@ -256,6 +256,11 @@ def upsert_position(position_doc: dict):
                     {"$set": position_doc},
                     upsert=True
                 )
+                try:
+                    from core.strategy_evidence import record_trade_closure_evidence
+                    record_trade_closure_evidence(position_doc, db=db)
+                except Exception as ev_err:
+                    logger.warning(f"Could not record strategy evidence for {symbol}: {ev_err}")
             else:
                 positions_col.update_one(
                     {"symbol": symbol},
