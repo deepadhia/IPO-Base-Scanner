@@ -2039,91 +2039,50 @@ def classify_listing_winner_traits(
     }
 
 def format_listing_breakout_alert(breakout_data):
-    """Format listing day breakout alert"""
+    """Format production-grade Listing Day High breakout alert with all essential details"""
     symbol = breakout_data['symbol']
     entry = breakout_data['entry_price']
     stop = breakout_data['stop_loss']
     target = breakout_data['target_price']
     listing_high = breakout_data['listing_day_high']
-    current_high = breakout_data['current_high']
-    current_price = breakout_data['current_price']
-    vol_spike = breakout_data['volume_spike']
-    rr = breakout_data['risk_reward']
-    conditions = breakout_data['breakout_conditions']
+    vol_spike = breakout_data.get('volume_spike', 0)
+    rr = breakout_data.get('risk_reward', 0)
     days_since_listing = breakout_data.get('days_since_listing', 0)
-    gain_from_listing = breakout_data.get('gain_from_listing_close', 0)
-    price_source = breakout_data.get('price_source', 'Historical Close')
-    entry_above_high_pct = breakout_data.get('entry_above_high_pct', 0)
-    target_multiplier = breakout_data.get('target_multiplier', 0.5)
-    volume_vs_listing_day = breakout_data.get('volume_vs_listing_day', 0)
-    has_volume_caution = breakout_data.get('has_volume_caution', False)
+    tier = breakout_data.get('tier', 'A')
+    pos_size = breakout_data.get('position_size_pct', 60)
+    regime = breakout_data.get('market_regime', 'NORMAL')
     
     lh_ref = listing_high
     limit_buy_price = lh_ref * 1.035 if lh_ref is not None else entry
-    
-    winner_label = breakout_data.get('winner_label', 'STANDARD')
-    winner_score = breakout_data.get('winner_score', 0)
-    winner_criteria = breakout_data.get('winner_criteria', [])
-    
-    winner_badge = ""
-    if winner_label == 'POSSIBLE_WINNER':
-        winner_badge = f"\n🔥 <b>POSSIBLE WINNER (High Probability)</b> [Score: {winner_score}/5 — met: {', '.join(winner_criteria)}]\n"
-    elif winner_label == 'STANDARD':
-        winner_badge = f"\n🏷️ <b>Breakout Pattern: STANDARD</b> [Score: {winner_score}/5]\n"
-    else:
-        winner_badge = f"\n👀 <b>Breakout Pattern: WATCHLIST ONLY</b> [Score: {winner_score}/5]\n"
-        
-    msg = f"""🎯 <b>LISTING DAY HIGH BREAKOUT!</b>
 
-📊 <b>{symbol}</b>
-📋 Signal Type: Listing Day Breakout
-{winner_badge}
-🏆 <b>TIER: {breakout_data.get('tier', 'A')}  |  💰 Position Size: {breakout_data.get('position_size_pct', 60)}%</b>
-📌 <i>{breakout_data.get('tier_rationale', '')}</i>
+    risk_pct = ((entry - stop) / entry * 100) if entry > 0 else 0
+    reward_pct = ((target - entry) / entry * 100) if entry > 0 else 0
 
-⏰ <b>Context & Timing:</b>
-• Age: {days_since_listing} days old
-• Breakout Status: <b>{'✅ SUSTAINED' if breakout_data.get('is_sustained') else '❌ FAILED_TO_SUSTAIN'}</b>
-• Pullback from High: {breakout_data.get('pullback_from_high_pct', 0):.1f}%
-• Max Extension: {breakout_data.get('max_extension_pct', 0):+.1f}%
-{'• <b>✅ Perfect Base Detected</b>' if breakout_data.get('perfect_base') else ''}
+    return f"""🎯 <b>AlphaPulse</b> | <b>LISTING BREAKOUT</b>
+━━━━━━━━━━━━━━━━━━━━
+📊 <b>{symbol}</b>  •  <b>Tier {tier}</b> ({pos_size}% Size)
+📋 <i>Listing Day High Breakout</i>
 
-💰 <b>Trade Details:</b>
-• Current Price: ₹{current_price:,.2f} <i>({price_source})</i>
-• Entry Target: ₹{entry:,.2f}
-• Stop Loss: ₹{stop:,.2f} (-{((entry - stop) / entry * 100):.1f}%)
-• Target Obj: ₹{target:,.2f}
-• Limit Buy Price: ₹{limit_buy_price:,.2f} (Capped at 3.5% above Listing High of ₹{lh_ref:,.2f})
-• Risk:Reward: 1:{rr:.1f}
+💰 <b>TRADE EXECUTION</b>
+• <b>Trigger Price:</b> ₹{entry:,.2f}
+• <b>Limit Buy Max:</b> ≤ ₹{limit_buy_price:,.2f} <i>(+3.5% cap)</i>
+• <b>Stop Loss:</b> ₹{stop:,.2f} (<code>-{risk_pct:.1f}%</code>)
+• <b>Profit Target:</b> ₹{target:,.2f} (<code>+{reward_pct:.1f}%</code>)
+• <b>Risk/Reward:</b> 1:{rr:.1f}
 
-📈 <b>Metrics:</b>
-• Listing Day High: ₹{listing_high:,.2f} (<b>BROKEN!</b>)
-• Base High: ₹{breakout_data.get('base_range_high', listing_high):,.2f}
+📈 <b>SETUP METRICS</b>
+• <b>Volume Surge:</b> <b>{vol_spike:.1f}x</b> <i>(vs 20d avg)</i>
+• <b>Listing Day High:</b> ₹{listing_high:,.2f} <i>(Broken)</i>
+• <b>IPO Age:</b> {days_since_listing} days post-listing
+• <b>Market Regime:</b> <b>{regime}</b>
 
-📊 <b>Confirmation:</b>
-• Volume Spike: {vol_spike:.1f}x avg
-• Vol vs Listing: {volume_vs_listing_day:.1f}x {'✅' if not has_volume_caution else '⚠️'}
-• Pattern: <b>{breakout_data.get('pattern_type', 'N/A')}</b>
-• Regime: <b>{breakout_data.get('market_regime', 'N/A')}</b>
-• {conditions}"""
-
-    if has_volume_caution:
-        msg += f"""
-
-⚠️ <b>VOLUME CAUTION:</b>
-• Signal sent for tracking - volume filters disabled
-• Review performance later to validate filters"""
-
-    msg += f"""
-
-⚠️ <b>Action Required:</b> Place a <b>Limit Buy Order</b> at <b>₹{limit_buy_price:,.2f}</b>.
-
-🤖 <i>Scanner v{SCANNER_VERSION} | {datetime.now().strftime('%H:%M IST')}</i>"""
-    return msg
+⚡ <b>Action:</b> Place Limit Buy order at or below ₹{limit_buy_price:,.2f}
+━━━━━━━━━━━━━━━━━━━━
+⚡ <i>AlphaPulse v{SCANNER_VERSION} • {datetime.now().strftime('%d %b %Y, %H:%M IST')}</i>"""
 
 
 def format_base_breakout_alert(breakout_data):
-    """Format Tier B base breakout alert (actionable trade, distinct from WATCHLIST)."""
+    """Format production-grade Tier B base breakout alert with all essential details"""
     symbol = breakout_data['symbol']
     entry = breakout_data['entry_price']
     stop = breakout_data['stop_loss']
@@ -2131,119 +2090,62 @@ def format_base_breakout_alert(breakout_data):
     listing_high = breakout_data['listing_day_high']
     current_price = breakout_data['current_price']
     vol_spike = breakout_data.get('volume_spike', 0)
-    rr = breakout_data['risk_reward']
+    rr = breakout_data.get('risk_reward', 0)
     days_since = breakout_data.get('days_since_listing', 0)
     base_range_high = breakout_data.get('base_range_high') or 0
     dist_below_high = ((listing_high - current_price) / listing_high * 100) if listing_high > 0 else 0
-    post_move = breakout_data.get('post_confirm_move_pct', 0)
     position_size = breakout_data.get('position_size_pct', 40)
-    tier_rationale = breakout_data.get('tier_rationale', '')
-    price_source = breakout_data.get('price_source', 'Live')
-    conditions = breakout_data.get('breakout_conditions', '')
-    symbol = breakout_data['symbol']
-    is_sustained = breakout_data.get('is_sustained', False)
-    pullback = breakout_data.get('pullback_from_high_pct', 0)
+    regime = breakout_data.get('market_regime', 'NORMAL')
 
-    listing_date = breakout_data['listing_date']
-    listing_date_str = (
-        listing_date.strftime('%Y-%m-%d')
-        if hasattr(listing_date, 'strftime') else str(listing_date)
-    )
+    risk_pct = ((entry - stop) / entry * 100) if entry > 0 else 0
+    limit_buy_price = entry * 1.02
 
-    winner_label = breakout_data.get('winner_label', 'STANDARD')
-    winner_score = breakout_data.get('winner_score', 0)
-    winner_criteria = breakout_data.get('winner_criteria', [])
-    
-    winner_badge = ""
-    if winner_label == 'POSSIBLE_WINNER':
-        winner_badge = f"\n🔥 <b>POSSIBLE WINNER (High Probability)</b> [Score: {winner_score}/5 — met: {', '.join(winner_criteria)}]\n"
-    elif winner_label == 'STANDARD':
-        winner_badge = f"\n🏷️ <b>Breakout Pattern: STANDARD</b> [Score: {winner_score}/5]\n"
-    else:
-        winner_badge = f"\n👀 <b>Breakout Pattern: WATCHLIST ONLY</b> [Score: {winner_score}/5]\n"
+    return f"""📦 <b>AlphaPulse</b> | <b>BASE BREAKOUT (Tier B)</b>
+━━━━━━━━━━━━━━━━━━━━
+📊 <b>{symbol}</b>  •  <b>Tier B</b> ({position_size}% Size)
+📋 <i>Accumulation Base Breakout below Listing High</i>
 
-    return f"""📦 <b>TIER B — BASE BREAKOUT: {symbol}</b>
-{winner_badge}
-{'='*35}
-🥉 <b>TIER: B  |  💰 Position Size: {position_size}%</b>
-📌 {tier_rationale}
-{'='*35}
+💰 <b>TRADE EXECUTION</b>
+• <b>Trigger Price:</b> ₹{entry:,.2f}
+• <b>Limit Buy Max:</b> ≤ ₹{limit_buy_price:,.2f}
+• <b>Stop Loss:</b> ₹{stop:,.2f} (<code>-{risk_pct:.1f}%</code>)
+• <b>Profit Target:</b> ₹{target:,.2f} <i>(Listing High)</i>
+• <b>Risk/Reward:</b> 1:{rr:.1f}
 
-🎯 <b>Setup:</b> Stock broke above its accumulation base while still
-   <b>{dist_below_high:.1f}% below</b> listing high — next stop: listing high.
+📈 <b>SETUP METRICS</b>
+• <b>Volume Surge:</b> <b>{vol_spike:.1f}x</b> <i>(vs 20d avg)</i>
+• <b>Base High:</b> ₹{base_range_high:,.2f}
+• <b>Distance to LH:</b> {dist_below_high:.1f}% below Listing High
+• <b>IPO Age:</b> {days_since} days post-listing
+• <b>Market Regime:</b> <b>{regime}</b>
 
-💰 <b>Trade Plan:</b>
-• Entry: ₹{entry:,.2f}  ({price_source})
-• Stop Loss: ₹{stop:,.2f}  ({((entry - stop) / entry * 100):.1f}% below entry)
-• Target: ₹{target:,.2f}  (Listing Day High = natural target)
-• Risk:Reward: 1:{rr:.1f}
-• Post-Breakout Move: {post_move:+.2f}% above base high
-
-📈 <b>Context:</b>
-• Base High Broken: ₹{base_range_high:,.2f}
-• Listing Day High (target): ₹{listing_high:,.2f}
-• Volume Spike: {vol_spike:.1f}x avg
-• IPO Age: {days_since}d  |  Listed: {listing_date_str}
-• Pattern: <b>{breakout_data.get('pattern_type', 'N/A')}</b>
-• Regime: <b>{breakout_data.get('market_regime', 'N/A')}</b>
-• Status: <b>{'✅ SUSTAINED' if is_sustained else f'❌ PULLED BACK ({pullback:.1f}%)'}</b>
-• {conditions}
-
-🤖 Scanner v{SCANNER_VERSION} | {datetime.now().strftime('%Y-%m-%d %H:%M IST')}
-"""
+⚡ <b>Action:</b> Place Limit Buy order at or below ₹{limit_buy_price:,.2f}
+━━━━━━━━━━━━━━━━━━━━
+⚡ <i>AlphaPulse v{SCANNER_VERSION} • {datetime.now().strftime('%d %b %Y, %H:%M IST')}</i>"""
 
 
 def format_watchlist_alert(breakout_data):
-    """Format watchlist alert for near-breakout candidates"""
+    """Format production-grade watchlist alert for near-breakout candidates"""
     symbol = breakout_data['symbol']
     current_price = breakout_data['current_price']
     listing_high = breakout_data['listing_day_high']
-    listing_date = breakout_data['listing_date']
-    price_source = breakout_data.get('price_source', 'Live')
-    days_since = breakout_data.get('days_since_listing', 0)
     vol_spike = breakout_data.get('volume_spike', 0)
+    distance_pct = ((listing_high - current_price) / listing_high * 100) if listing_high > 0 else 0
+    days_since = breakout_data.get('days_since_listing', 0)
     
-    # Calculate distance to breakout
-    distance_amt = listing_high - current_price
-    distance_pct = (distance_amt / listing_high * 100)
-    
-    # Format listing date
-    if hasattr(listing_date, 'strftime'):
-        listing_date_str = listing_date.strftime('%Y-%m-%d')
-    else:
-        listing_date_str = str(listing_date)
-    
-    # Volume trend assessment
-    vol_status = "Building Up 🟢" if vol_spike > 1.0 else "Normal 🟡"
-    if vol_spike > 2.0:
-        vol_status = "Very High 💥"
-    
-    msg = f"""👀 <b>WATCHLIST ALERT: {symbol}</b>
-    
-🚀 <b>Approaching Breakout Level!</b>
-The stock is within <b>{distance_pct:.1f}%</b> of its Listing Day High.
+    return f"""👀 <b>AlphaPulse</b> | <b>WATCHLIST RADAR</b>
+━━━━━━━━━━━━━━━━━━━━
+📊 <b>{symbol}</b>  •  <b>{distance_pct:.1f}% to Pivot</b>
 
-📊 <b>Status:</b>
-• Current Price: ₹{current_price:,.2f} ({price_source})
-• Breakout Level: ₹{listing_high:,.2f}
-• Distance: {distance_pct:.1f}% away
+💰 <b>RADAR STATUS</b>
+• <b>Current LTP:</b> ₹{current_price:,.2f}
+• <b>Breakout Pivot:</b> ₹{listing_high:,.2f}
+• <b>Volume Trend:</b> {vol_spike:.1f}x avg (Pre-breakout buildup)
+• <b>IPO Age:</b> {days_since} days
 
-📉 <b>Volume Trend:</b>
-• Volume: {vol_spike:.1f}x avg ({vol_status})
-• Pre-breakout buildup detected
-
-📅 <b>Listing Context:</b>
-• Listed on: {listing_date_str}
-• Age: {days_since} days old
-• Pattern: <b>{breakout_data.get('pattern_type', 'N/A')}</b>
-• Regime: <b>{breakout_data.get('market_regime', 'N/A')}</b>
-
-💡 <b>Actionable Advice:</b>
-Keep {symbol} on your radar. A close above ₹{listing_high:.2f} with volume triggers a valid entry.
-
-🤖 Scanner v{SCANNER_VERSION} | {datetime.now().strftime('%Y-%m-%d %H:%M IST')}
-"""
-    return msg
+⚡ <b>Status:</b> Approaching breakout level. A confirmed close above ₹{listing_high:,.2f} triggers entry.
+━━━━━━━━━━━━━━━━━━━━
+⚡ <i>AlphaPulse v{SCANNER_VERSION} • {datetime.now().strftime('%d %b %Y, %H:%M IST')}</i>"""
 
 def save_watchlist_signal(breakout_data):
     """Save watchlist signal to prevent duplicate alerts"""
@@ -2428,8 +2330,7 @@ def scan_listing_day_breakouts():
                         # Send alert
                         alert_msg = format_listing_breakout_alert(breakout)
                         if portfolio_full:
-                            alert_msg = f"⚠️ <b>[PORTFOLIO FULL - PAPER ONLY]</b> (Active: {active_count}, Soft Cap: {scanner_module.MAX_ACTIVE_POSITIONS}, Hard Cap: {scanner_module.HARD_ACTIVE_POSITIONS})\n" + alert_msg
-                        alert_msg += f"\n\n⚖️ <b>Regime Size Weight:</b> {size_mult:.2f}x ({_mr})"
+                            alert_msg = f"⚠️ <b>[PORTFOLIO FULL - PAPER ONLY]</b>\n" + alert_msg
                         send_telegram(alert_msg)
 
                         breakouts_found += 1
@@ -2445,8 +2346,7 @@ def scan_listing_day_breakouts():
 
                         alert_msg = format_base_breakout_alert(breakout)
                         if portfolio_full:
-                            alert_msg = f"⚠️ <b>[PORTFOLIO FULL - PAPER ONLY]</b> (Active: {active_count}, Soft Cap: {scanner_module.MAX_ACTIVE_POSITIONS}, Hard Cap: {scanner_module.HARD_ACTIVE_POSITIONS})\n" + alert_msg
-                        alert_msg += f"\n\n⚖️ <b>Regime Size Weight:</b> {size_mult:.2f}x ({_mr})"
+                            alert_msg = f"⚠️ <b>[PORTFOLIO FULL - PAPER ONLY]</b>\n" + alert_msg
                         send_telegram(alert_msg)
                         breakouts_found += 1
 

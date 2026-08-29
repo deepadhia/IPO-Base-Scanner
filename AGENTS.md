@@ -1,12 +1,12 @@
-# 🤖 AGENTS.md — Development Guidelines & System Architecture
+# 🤖 AGENTS.md — Development Guidelines & System Architecture (AlphaPulse)
 
-This file defines the core engineering standards, domain knowledge, and operational protocols for any AI agent or engineer working in the **IPO Base Scanner** repository.
+This file defines the core engineering standards, domain knowledge, and operational protocols for any AI agent or engineer working in the **AlphaPulse** repository.
 
 ---
 
 ## 🏛️ 1. Repository Purpose & Architecture
 
-The **IPO Base Scanner** is a behavior-driven quantitative trading system that identifies, validates, and manages momentum breakouts in recent Indian IPOs (Mainboard NSE/BSE).
+**AlphaPulse** is a behavior-driven quantitative trading system that identifies, validates, and manages high-conviction momentum breakouts in Indian equities (Mainboard NSE/BSE).
 
 ### Core Engines & Scanners
 1. **Listing Day Breakout Engine (`listing_day_breakout_scanner.py`):**

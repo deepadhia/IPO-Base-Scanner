@@ -276,6 +276,25 @@ def signal_exists(signal_id: str) -> bool:
         logger.error(f"Failed signal_exists lookup for {signal_id}: {e}")
         return False
 
+def has_signal_today(symbol: str, date_str: str = None) -> bool:
+    """Return True if a signal already exists for this symbol today across any scanner or window."""
+    if signals_col is None or not symbol:
+        return False
+    try:
+        if not date_str:
+            date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        date_pattern = date_str.replace("-", "")
+        return signals_col.count_documents({
+            "symbol": symbol,
+            "$or": [
+                {"signal_date": {"$regex": f"^{date_str}"}},
+                {"signal_id": {"$regex": f"_{date_pattern}"}}
+            ]
+        }, limit=1) > 0
+    except Exception as e:
+        logger.error(f"Failed has_signal_today lookup for {symbol}: {e}")
+        return False
+
 def has_active_position(symbol: str) -> bool:
     """Return True if the symbol already has an ACTIVE position."""
     if positions_col is None or not symbol:

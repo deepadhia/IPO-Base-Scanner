@@ -1,13 +1,11 @@
-# 🚀 IPO Breakout Qualification Engine
+# 🚀 AlphaPulse — Systematic Momentum & Breakout Qualification Engine
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Version](https://img.shields.io/badge/version-3.5.0-orange.svg)](https://github.com/Deep-Adhia/IPO-Base-Scanner)
+[![Version](https://img.shields.io/badge/version-3.5.0-orange.svg)](https://github.com/deepadhia/Alpha-Pulse)
 [![Automated](https://img.shields.io/badge/automation-GitHub%20Actions-green.svg)](https://github.com/features/actions)
 
-This is **not** a simple breakout scanner.
-
-It is a behavior-driven IPO momentum qualification system that participates **only in confirmed breakouts** with structural and volume validation. The system ruthlessly filters out market noise, grading high-quality setups while explicitly tracking every rejection — so the data can be analysed 30 days later to continuously refine the edge.
+**AlphaPulse** is a high-conviction, behavior-driven quantitative momentum and breakout qualification system. It participates **only in confirmed breakouts** with structural and volume validation, ruthlessly filtering out noise and tracking setup forensics to continuously refine the statistical edge.
 
 ---
 
@@ -629,4 +627,4 @@ All statistics, analytics scripts, and strategy evidence are strictly bounded to
 
 ---
 
-<sub>Built for systematic IPO momentum trading | v3.5.0 | Automated via GitHub Actions + Cloudflare Worker Dispatcher | MongoDB Atlas Infrastructure | Data-Driven Filter Optimization</sub>
+<sub>Built for systematic momentum trading | AlphaPulse v3.5.0 | Automated via GitHub Actions + Cloudflare Worker Dispatcher | MongoDB Atlas Infrastructure | Data-Driven Filter Optimization</sub>

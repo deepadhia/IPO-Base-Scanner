@@ -21,7 +21,7 @@
 // ─── Configuration ────────────────────────────────────────────────────────────
 
 const GITHUB_OWNER = "deepadhia";
-const GITHUB_REPO  = "IPO-Base-Scanner";
+const GITHUB_REPO  = "Alpha-Pulse";
 const GITHUB_REF   = "main";
 
 const GITHUB_DISPATCH_URL = (workflow) =>

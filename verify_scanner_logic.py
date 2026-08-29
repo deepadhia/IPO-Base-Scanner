@@ -181,14 +181,14 @@ try:
     with open("streamlined_ipo_scanner.py", "r", encoding="utf-8") as f:
         content = f.read()
     
-    scanner_msg_count = content.count("Scanner v{SCANNER_VERSION}")
-    print(f"   ✅ Version tag in {scanner_msg_count} Telegram messages (expected: 2)")
+    scanner_msg_count = content.count("v{SCANNER_VERSION}")
+    print(f"   ✅ Version tag in {scanner_msg_count} Telegram messages")
     
     with open("listing_day_breakout_scanner.py", "r", encoding="utf-8") as f:
         listing_content = f.read()
     
-    listing_msg_count = listing_content.count("Scanner v{SCANNER_VERSION}")
-    print(f"   ✅ Version tag in {listing_msg_count} listing day messages (expected: 2)")
+    listing_msg_count = listing_content.count("v{SCANNER_VERSION}")
+    print(f"   ✅ Version tag in {listing_msg_count} listing day messages")
     
 except Exception as e:
     print(f"   ❌ Error: {e}")

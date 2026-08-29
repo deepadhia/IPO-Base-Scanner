@@ -271,10 +271,16 @@ def get_market_regime(target_date=None):
         TOLERANCE = 0.002
         CONFIRMATION_DAYS = 3
         
-        # Default to today if no date provided
+        # Robust date parsing (handles None, str, datetime, Timestamp, date)
         if target_date is None:
             target_date = datetime.today().date()
-        elif hasattr(target_date, 'date'):
+        elif isinstance(target_date, str):
+            target_date = pd.to_datetime(target_date).date()
+        elif hasattr(target_date, 'date') and callable(target_date.date):
+            target_date = target_date.date()
+        elif hasattr(target_date, 'date') and not callable(target_date.date):
+            target_date = target_date.date
+        elif isinstance(target_date, datetime):
             target_date = target_date.date()
         
         # Check cache (key is date string)
@@ -425,9 +431,16 @@ def get_market_regime(target_date=None):
             if confirmed_regimes[i] != "UNKNOWN":
                 _nifty_regime_cache[d_key] = confirmed_regimes[i]
                 
-        # Return target date's confirmed regime
+        # Return target date's confirmed regime or the latest valid confirmed regime
         target_key = target_date.strftime('%Y-%m-%d')
-        return _nifty_regime_cache.get(target_key, confirmed_regimes[-1])
+        if target_key in _nifty_regime_cache:
+            return _nifty_regime_cache[target_key]
+            
+        for r in reversed(confirmed_regimes):
+            if r != "UNKNOWN":
+                _nifty_regime_cache[target_key] = r
+                return r
+        return "NORMAL"
         
     except Exception as e:
         logger.warning(f"⚠️ Market regime detection failed: {e}")
@@ -1005,124 +1018,58 @@ def send_telegram(msg):
         logger.error(f"❌ Telegram error: {e}")
 
 def format_signal_alert(symbol, grade, entry_price, stop_loss, target_price, score, date, consolidation_low=None, consolidation_high=None, breakout_price=None, data_source=None, current_price=None, price_source=None, breakout_close=None, entry_note=None, pattern_type=None, market_regime=None, listing_high=None):
-    """Format detailed IPO signal alert with comprehensive trading information"""
-    # Calculate risk metrics
-    risk_amount = entry_price - stop_loss
-    risk_percentage = (risk_amount / entry_price) * 100
-    reward_amount = target_price - entry_price
-    reward_percentage = (reward_amount / entry_price) * 100
-    risk_reward_ratio = reward_amount / risk_amount if risk_amount > 0 else 0
+    """Format production-grade institutional breakout alert with all necessary trade details"""
+    risk_percentage = ((entry_price - stop_loss) / entry_price) * 100 if entry_price > 0 else 0
+    reward_percentage = ((target_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
+    risk_reward_ratio = (target_price - entry_price) / (entry_price - stop_loss) if (entry_price - stop_loss) > 0 else 0
     
-    # Calculate Limit Buy order price capped at 3.5% above listing high
     lh_ref = listing_high or breakout_price or consolidation_high
     limit_buy_price = lh_ref * 1.035 if lh_ref is not None else entry_price
 
-    # Calculate position sizing (assuming 1% risk per trade)
-    position_size_percent = 1.0  # 1% of portfolio
-    position_size_amount = (position_size_percent * 100000) / risk_amount if risk_amount > 0 else 0  # Assuming 1L portfolio
-    
-    # Determine win rate and confidence based on grade
-    grade_info = {
-        "A+": {"win_rate": "91%", "confidence": "Very High", "emoji": "⭐"},
-        "A": {"win_rate": "85%", "confidence": "High", "emoji": "🔥"},
-        "B": {"win_rate": "75%", "confidence": "Medium-High", "emoji": "🔥"},
-        "C": {"win_rate": "65%", "confidence": "Medium", "emoji": "📈"},
-        "D": {"win_rate": "60%", "confidence": "Low-Medium", "emoji": "📊"}
-    }
-    
-    info = grade_info.get(grade, {"win_rate": "60%", "confidence": "Low", "emoji": "📊"})
-    win_rate = info["win_rate"]
-    confidence = info["confidence"]
-    emoji = info["emoji"]
-    
-    # Format price information section
-    # Bug 2 Fix: Always show BOTH breakout_close (fair reference) and entry_price
-    # (actual live/execution price) so the alert is never ambiguous.
-    price_info_section = ""
-    if current_price is not None or breakout_close is not None:
-        price_info_section = f"\n\n💰 <b>Price Information:</b>"
-        if breakout_close is not None:
-            price_info_section += f"\n• Breakout Close (Reference): ₹{breakout_close:,.2f}"
-        if current_price is not None:
-            price_info_section += f"\n• Current/Live Price: ₹{current_price:,.2f}"
-        price_info_section += f"\n• Entry Price (Logged): ₹{entry_price:,.2f}"
-        if price_source:
-            price_info_section += f"\n• Price Source: {price_source}"
-        if entry_note:
-            note_labels = {
-                "LIVE_INTRADAY": "⚡ Live intraday — execution price may differ from breakout close.",
-                "NEXT_DAY_CLOSE": "📅 Based on next-day close.",
-                "FALLBACK_CLOSE": "⚠️ Fallback close — live price unavailable."
-            }
-            price_info_section += f"\n• Entry Type: {note_labels.get(entry_note, entry_note)}"
+    base_range_str = "N/A"
+    if consolidation_low and consolidation_high and consolidation_high > 0:
+        prng = ((consolidation_high - consolidation_low) / consolidation_high) * 100
+        base_range_str = f"₹{consolidation_low:,.1f} - ₹{consolidation_high:,.1f} ({prng:.1f}% PRNG)"
 
-    
-    # Format the alert message with comprehensive information
-    msg = f"""🎯 <b>IPO BREAKOUT SIGNAL</b>
+    pattern_display = pattern_type or "Consolidation Breakout"
+    regime_display = market_regime or "NORMAL"
+    date_str = date if isinstance(date, str) else date.strftime('%Y-%m-%d')
+    src_display = price_source or (data_source or "Live Data")
 
-📊 Symbol: <b>{symbol}</b>
-{emoji} Grade: <b>{grade}</b> ({confidence} Confidence){price_info_section}
-💰 Entry Price (Reference): ₹{entry_price:,.2f}
-🛑 Stop Loss: ₹{stop_loss:,.2f} ({risk_percentage:.1f}% risk)
-🎯 Target: ₹{target_price:,.2f} ({reward_percentage:.1f}% reward)
-🛒 Limit Buy Price: ₹{limit_buy_price:,.2f} (Capped at 3.5% above Listing Day High of ₹{lh_ref:,.2f})
-📊 Risk:Reward: 1:{risk_reward_ratio:.1f}
-📈 Expected Return: {reward_percentage:.1f}% ({win_rate} win rate)
+    msg = f"""🎯 <b>AlphaPulse</b> | <b>BREAKOUT SIGNAL</b>
+━━━━━━━━━━━━━━━━━━━━
+📊 <b>{symbol}</b>  •  <b>Grade {grade}</b> (Score: {score:.0f}/100)
+📋 <i>{pattern_display}</i>
 
-📋 <b>Pattern Details:</b>"""
-    
-    if consolidation_low and consolidation_high:
-        msg += f"\n- Consolidation: Rs{consolidation_low:,.2f} - Rs{consolidation_high:,.2f}"
-    
-    if breakout_price:
-        msg += f"\n- Breakout: Rs{breakout_price:,.2f}"
-    
-    msg += f"\n- Score: {score:.1f}/100"
-    
-    if pattern_type:
-        msg += f"\n- Pattern: <b>{pattern_type}</b>"
-    if market_regime:
-        msg += f"\n- Regime: <b>{market_regime}</b>"
+💰 <b>TRADE EXECUTION</b>
+• <b>Trigger Price:</b> ₹{entry_price:,.2f}
+• <b>Limit Buy Max:</b> ≤ ₹{limit_buy_price:,.2f} <i>(+3.5% cap)</i>
+• <b>Stop Loss:</b> ₹{stop_loss:,.2f} (<code>-{risk_percentage:.1f}%</code>)
+• <b>Profit Target:</b> ₹{target_price:,.2f} (<code>+{reward_percentage:.1f}%</code>)
+• <b>Risk/Reward:</b> 1:{risk_reward_ratio:.1f}
 
-    # Add data source information
-    if data_source:
-        if data_source == 'Upstox API':
-            msg += f"""
-• Data Source: 🚀 Upstox API (Premium)"""
-        elif data_source == 'NSE (Fallback)':
-            msg += f"""
-• Data Source: 📊 NSE (Fallback)"""
-        else:
-            msg += f"""
-• Data Source: {data_source}"""
+📈 <b>SETUP METRICS</b>
+• <b>Base Range:</b> {base_range_str}
+• <b>Market Regime:</b> <b>{regime_display}</b>
+• <b>Price Source:</b> {src_display}
 
-    msg += f"""
-
-💼 <b>Position Sizing:</b>
-• Risk per trade: {risk_percentage:.1f}%
-• Suggested quantity: {int(position_size_amount):,} shares
-• Capital at risk: ₹{int(risk_amount * position_size_amount):,}
-
-📅 Signal Date: {date if isinstance(date, str) else date.strftime('%Y-%m-%d')}
-⚠️ <b>Action Required:</b> Place a <b>Limit Buy Order</b> at <b>₹{limit_buy_price:,.2f}</b>.
-• If next-day opens below limit price, enter at open.
-• If next-day opens above limit price, wait for an intraday pullback to limit price."""
-    
+⚡ <b>Action:</b> Place Limit Buy order at or below ₹{limit_buy_price:,.2f}
+━━━━━━━━━━━━━━━━━━━━
+⚡ <i>AlphaPulse v{SCANNER_VERSION} • {date_str}</i>"""
     return msg
 
 def format_exit_alert(symbol, exit_reason, exit_price, pnl_pct, days_held, entry_price):
     """Format detailed exit alert with broker-grade P&L colors (Dhan/Upstox style)"""
-    # Exit reason emojis
     exit_emojis = {
         "Stop Loss": "🛑",
         "Early Base Break": "⚡",
         "Time Stop -5%": "⏰",
         "Time Stop -8%": "⏰",
+        "Time Stop - Dead Money (14-Day Velocity Gate)": "⏰",
         "Partial Take": "💰"
     }
     emoji = exit_emojis.get(exit_reason, "📊")
     
-    # PnL color badge (green for positive, red for negative)
     pnl_abs = exit_price - entry_price
     if pnl_pct > 0:
         pnl_badge = f"🟢 <b>+{pnl_pct:.2f}%</b> (▲ +₹{pnl_abs:,.2f}/sh)"
@@ -1131,16 +1078,18 @@ def format_exit_alert(symbol, exit_reason, exit_price, pnl_pct, days_held, entry
     else:
         pnl_badge = f"⚪ <b>0.00%</b> (₹0.00/sh)"
     
-    msg = f"""{emoji} <b>POSITION EXIT</b>
-
+    msg = f"""{emoji} <b>AlphaPulse</b> | <b>POSITION EXIT</b>
+━━━━━━━━━━━━━━━━━━━━
 📊 <b>Symbol:</b> <b>{symbol}</b>
 📋 <b>Exit Reason:</b> <b>{exit_reason}</b>
-💰 <b>Exit Price:</b> ₹{exit_price:,.2f}
-💵 <b>Entry Price:</b> ₹{entry_price:,.2f}
-📈 <b>Realized P&L:</b> {pnl_badge}
-📅 <b>Days Held:</b> {days_held} day{'s' if days_held != 1 else ''}
 
-⏰ <i>{datetime.now().strftime('%d %b %Y, %H:%M IST')}</i>"""
+💰 <b>FINANCIAL OUTCOME</b>
+• <b>Exit Price:</b> ₹{exit_price:,.2f}
+• <b>Entry Price:</b> ₹{entry_price:,.2f}
+• <b>Realized P&L:</b> {pnl_badge}
+• <b>Holding Period:</b> {days_held} day{'s' if days_held != 1 else ''}
+━━━━━━━━━━━━━━━━━━━━
+⚡ <i>AlphaPulse v{SCANNER_VERSION} • {datetime.now().strftime('%d %b %Y, %H:%M IST')}</i>"""
     return msg
 
 
@@ -3133,36 +3082,31 @@ def detect_live_patterns(symbols, listing_map):
                 else:
                     _winner_badge = ""
 
+                risk_pct = ((entry - stop) / entry * 100) if entry > 0 else 0
+                reward_pct = ((target - entry) / entry * 100) if entry > 0 else 0
+                prng_pct = ((high2 - low) / high2 * 100) if high2 > 0 else 0
+                vol_ratio = vol_ratio_val
+
                 message = f"""⚠️ <b>[PORTFOLIO FULL - PAPER ONLY]</b>
-🎯 <b>CONSOLIDATION BREAKOUT SIGNAL</b>{_winner_badge}
+🎯 <b>AlphaPulse</b> | <b>CONSOLIDATION BREAKOUT</b>
+━━━━━━━━━━━━━━━━━━━━
+📊 <b>{sym}</b>  •  <b>Grade {grade}</b>
+📋 <i>{w}-Day Base Breakout</i>
 
-📊 Symbol: <b>{sym}</b>
-📋 Signal Type: <b>Consolidation-Based Breakout</b>
-{'🔥' if grade in ['A+', 'B'] else '📈'} Grade: <b>{grade}</b>
+💰 <b>TRADE EXECUTION</b>
+• <b>Trigger Price:</b> ₹{entry:,.2f}
+• <b>Stop Loss:</b> ₹{stop:,.2f} (<code>-{risk_pct:.1f}%</code>)
+• <b>Profit Target:</b> ₹{target:,.2f} (<code>+{reward_pct:.1f}%</code>)
 
-💰 <b>Price Information:</b>
-• Current/Live Price: ₹{current_price_display:.2f}
-• Entry Reference: ₹{entry:.2f} (Next Day Opening)
-• Price Source: {price_source_display}
+📈 <b>SETUP METRICS</b>
+• <b>Volume Surge:</b> <b>{vol_ratio:.1f}x</b> <i>(vs 20d avg)</i>
+• <b>Base Volatility:</b> <b>{prng_pct:.1f}% PRNG</b>
+• <b>Avg Turnover:</b> ₹{avg_turnover_cr:.1f} Cr/day  •  <b>Mcap:</b> ₹{mcap_cr:,.0f} Cr
+• <b>Market Regime:</b> <b>{_mr}</b>
 
-🛑 Stop Loss: ₹{stop:.2f}
-📈 Target: ₹{target:.2f}
-📅 Signal Date: {date_str}
-
-🏗️ <b>Institutional Quality:</b>
-• Market Cap: ₹{mcap_cr:.1f} Cr
-• Avg Turnover: ₹{avg_turnover_cr:.2f} Cr/day
-• Circuit Days (15d): {circuit_days_15}
-{price_warning}
-
-📋 <b>TRADING INSTRUCTIONS:</b>
-• Enter at market open tomorrow
-• Use ₹{entry:.2f} as reference price
-• Set stop loss at ₹{stop:.2f}
-• Target: ₹{target:.2f}
-⚡ Consolidation pattern detected
-
-🤖 Scanner v{SCANNER_VERSION} | {datetime.now().strftime('%Y-%m-%d %H:%M IST')}"""
+⚡ <b>Execution:</b> Enter at market open tomorrow (Ref: ₹{entry:,.2f})
+━━━━━━━━━━━━━━━━━━━━
+⚡ <i>AlphaPulse v{SCANNER_VERSION} • {date_str}</i>"""
                 send_telegram(message)
                 
                 signals_found += 1
@@ -3726,13 +3670,8 @@ def detect_scan(symbols, listing_map):
                     market_regime=_mr if '_mr' in locals() else None,
                     listing_high=lhigh
                 )
-                # Add signal type and version to alert
-                signal_msg = signal_msg.replace("🎯 <b>IPO BREAKOUT SIGNAL</b>", 
-                                               "🎯 <b>CONSOLIDATION BREAKOUT SIGNAL</b>\n\n📋 <b>Signal Type:</b> Consolidation-Based Breakout")
                 if portfolio_full:
                     signal_msg = "⚠️ <b>[PORTFOLIO FULL - PAPER ONLY]</b>\n" + signal_msg
-                signal_msg += f"\n\n⚖️ <b>Regime Size Weight:</b> {size_mult:.2f}x ({_mr})"
-                signal_msg += f"\n🤖 Scanner v{SCANNER_VERSION} | {datetime.now().strftime('%Y-%m-%d %H:%M IST')}"
                 send_telegram(signal_msg)
                 signals_found += 1
                 logger.info(f"🎯 Signal found: {sym} - {grade} grade at {entry}")
@@ -3772,17 +3711,17 @@ def detect_scan(symbols, listing_map):
     except Exception:
         active_positions_cnt = 0
 
-    summary_msg = f"""📊 <b>IPO Scanner Summary</b>
-    
-🔍 <b>Scan Results:</b>
-• Symbols Processed: {symbols_processed}
-• New Signals Found: {signals_found}
-• Scan Date: {datetime.today().strftime('%Y-%m-%d %H:%M')}
-• DB Status: {db_status}
+    summary_msg = f"""📊 <b>AlphaPulse</b> | <b>DAILY SCAN SUMMARY</b>
+━━━━━━━━━━━━━━━━━━━━
+🔍 <b>Scan Telemetry:</b>
+• <b>Symbols Processed:</b> {symbols_processed}
+• <b>New Signals Found:</b> {signals_found}
+• <b>Active Portfolio Positions:</b> {active_positions_cnt}
+• <b>System DB Health:</b> {db_status}
 
 {detection_msg}
-
-📈 <b>Active Positions:</b> {active_positions_cnt}"""
+━━━━━━━━━━━━━━━━━━━━
+⚡ <i>AlphaPulse v{SCANNER_VERSION} • {datetime.today().strftime('%Y-%m-%d %H:%M IST')}</i>"""
     
     send_telegram(summary_msg)
     return signals_found
@@ -3904,20 +3843,21 @@ def format_position_update_alert(symbol, current_price, entry_price, old_trailin
         
     trailing_status = "🔺 Stop Raised" if new_trailing > old_trailing else "🔹 Maintained"
     
-    msg = f"""🔄 <b>POSITION UPDATE</b>
+    msg = f"""🔄 <b>AlphaPulse</b> | <b>TRAILING STOP UPDATE</b>
+━━━━━━━━━━━━━━━━━━━━
+📊 <b>Symbol:</b> <b>{symbol}</b>  •  <b>Grade {grade}</b>
 
-📊 <b>Symbol:</b> <b>{symbol}</b>
-⭐ <b>Grade:</b> {grade}
-💰 <b>Current LTP:</b> ₹{current_price:,.2f}
-💵 <b>Entry Price:</b> ₹{entry_price:,.2f}
-📈 <b>P&L Return:</b> {pnl_badge}
-📅 <b>Holding Period:</b> {days_held} day{'s' if days_held != 1 else ''}
+💰 <b>LIVE STATUS</b>
+• <b>Current LTP:</b> ₹{current_price:,.2f}
+• <b>Entry Price:</b> ₹{entry_price:,.2f}
+• <b>Unrealized P&L:</b> {pnl_badge}
+• <b>Days Held:</b> {days_held} day{'s' if days_held != 1 else ''}
 
-🛡️ <b>Trailing Stop Loss:</b>
-• Previous: ₹{old_trailing:,.2f}
-• Updated:  ₹{new_trailing:,.2f} ({trailing_status})
-
-⏰ <i>{datetime.now().strftime('%d %b %Y, %H:%M IST')}</i>"""
+🛡️ <b>STOP-LOSS ADJUSTMENT</b>
+• <b>Previous Stop:</b> ₹{old_trailing:,.2f}
+• <b>New Trailing Stop:</b> ₹{new_trailing:,.2f} (<b>{trailing_status}</b>)
+━━━━━━━━━━━━━━━━━━━━
+⚡ <i>AlphaPulse v{SCANNER_VERSION} • {datetime.now().strftime('%d %b %Y, %H:%M IST')}</i>"""
     return msg
 
 def stop_loss_update_scan():

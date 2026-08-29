@@ -555,7 +555,7 @@ def detect_intraday_breakout(df, symbol, bulk_prices=None):
         return None
 
 def format_intraday_alert(breakout_data):
-    """Format intraday breakout alert"""
+    """Format production-grade intraday breakout alert with all essential details"""
     symbol = breakout_data['symbol']
     entry = breakout_data['entry_price']
     stop = breakout_data['stop_loss']
@@ -565,37 +565,31 @@ def format_intraday_alert(breakout_data):
     vol_spike = breakout_data['volume_spike']
     rr = breakout_data['risk_reward']
     strength = breakout_data['breakout_strength']
-    price_source = breakout_data.get('price_source', 'Historical')
+    regime = breakout_data.get('market_regime', 'NORMAL')
     
-    # Add emoji for price source
-    source_emojis = {
-        'upstox': '🚀',
-        'yfinance': '📈',
-        'jugaad': '📊',
-        'Historical': '📊'
-    }
-    emoji = source_emojis.get(price_source.lower(), '💰')
+    risk_pct = ((entry - stop) / entry * 100) if entry > 0 else 0
+    reward_pct = ((target - entry) / entry * 100) if entry > 0 else 0
     
-    msg = f"""⚡ <b>INTRADAY BREAKOUT DETECTED</b>
+    msg = f"""⚡ <b>AlphaPulse</b> | <b>INTRADAY BREAKOUT</b>
+━━━━━━━━━━━━━━━━━━━━
+📊 <b>{symbol}</b>  •  <b>Score {strength}/3</b>
+📋 <i>Intraday Momentum Surge</i>
 
-📊 Symbol: <b>{symbol}</b>
-💰 Current Price: ₹{current:,.2f} ({emoji} {price_source})
-🎯 Entry: ₹{entry:,.2f}
-🛑 Stop Loss: ₹{stop:,.2f}
-📈 Target: ₹{target:,.2f}
-📊 Risk:Reward: 1:{rr:.1f}
+💰 <b>TRADE EXECUTION</b>
+• <b>Live Price:</b> ₹{current:,.2f}
+• <b>Trigger Level:</b> ₹{entry:,.2f}
+• <b>Stop Loss:</b> ₹{stop:,.2f} (<code>-{risk_pct:.1f}%</code>)
+• <b>Profit Target:</b> ₹{target:,.2f} (<code>+{reward_pct:.1f}%</code>)
+• <b>Risk/Reward:</b> 1:{rr:.1f}
 
-📊 <b>Breakout Metrics:</b>
-• RSI: {rsi:.1f}
-• Volume Spike: {vol_spike:.1f}x
-• Pattern: <b>{breakout_data.get('pattern_type', 'N/A')}</b>
-• Regime: <b>{breakout_data.get('market_regime', 'N/A')}</b>
-• Breakout Strength: {strength}/3
+📈 <b>SETUP METRICS</b>
+• <b>Volume Surge:</b> <b>{vol_spike:.1f}x</b>
+• <b>RSI (14):</b> {rsi:.1f}
+• <b>Market Regime:</b> <b>{regime}</b>
 
-⏰ Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-⚠️ <b>Action Required:</b> Review immediately for entry opportunity"""
-    
+⚡ <b>Action:</b> Review live chart for entry confirmation
+━━━━━━━━━━━━━━━━━━━━
+⚡ <i>AlphaPulse v{SCANNER_VERSION} • {datetime.now().strftime('%d %b %Y, %H:%M IST')}</i>"""
     return msg
 
 def save_breakout_signal(breakout_data):
