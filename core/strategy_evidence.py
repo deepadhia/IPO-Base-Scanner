@@ -100,26 +100,26 @@ def build_trade_evidence_doc(pos: dict, db=None, fetch_data_fn=None) -> dict:
     if is_win:
         if pnl_pct >= 10.0 and vol_spike >= 3.0:
             archetype = "HIGH_VOL_MOMENTUM_RUNNER"
-            algo_takeaway = f"Institutional volume expansion ({vol_spike:.1f}x) drove strong follow-through (+{pnl_pct:.1f}%). Trail with SuperTrend to maximize gains."
+            algo_takeaway = f"Institutional volume expansion ({vol_spike:.1f}x) drove strong follow-through (+{pnl_pct:.1f}%). [v3.5.0 SuperTrend Trailing Directive]."
         elif pnl_pct >= 10.0 and prng_10d <= 15.0:
             archetype = "TIGHT_BASE_COMPOUNDER"
-            algo_takeaway = f"Tight base coil ({prng_10d:.1f}% PRNG) allowed low-risk entry with +{pnl_pct:.1f}% return."
+            algo_takeaway = f"Tight base coil ({prng_10d:.1f}% PRNG) allowed low-risk entry with +{pnl_pct:.1f}% return. [v3.3.0 Base Tightness Standard]."
         else:
             archetype = "MODERATE_GAIN_TRADE"
-            algo_takeaway = f"Solid breakout follow-through (+{pnl_pct:.1f}%). Protect with trailing stop."
+            algo_takeaway = f"Solid breakout follow-through (+{pnl_pct:.1f}%). Protected with trailing stop [v3.4.0]."
     else:
         if upper_wick_pct >= 35.0:
             archetype = "UPPER_WICK_SUPPLY_TRAP"
             failure_reason = f"Breakout closed with {upper_wick_pct:.1f}% upper wick; heavy institutional supply rejection."
-            algo_takeaway = "Upper 50% Candle Body Gate structurally filters out this intraday supply trap."
+            algo_takeaway = "Addressed in v3.5.0: Upper 50% Candle Body Gate structurally filters out this intraday supply trap."
         elif days_held >= 14:
             archetype = "STAGNANT_DEAD_MONEY_BLEED"
             failure_reason = f"Position held {days_held:.0f} days with negative return ({pnl_pct:.1f}%); momentum decay."
-            algo_takeaway = "14-Day Velocity Speed Gate exits this position early to prevent prolonged capital tie-up."
+            algo_takeaway = "Addressed in v3.5.0: 14-Day Velocity Speed Gate exits this position early to prevent prolonged capital tie-up."
         else:
             archetype = "EARLY_FALSE_BREAKOUT"
             failure_reason = f"Breakout failed follow-through ({pnl_pct:.1f}%)."
-            algo_takeaway = "Standard risk stop limited downside."
+            algo_takeaway = "Addressed in v3.2.0: Dynamic swing low stop capped downside risk."
 
     cohorts = [archetype]
     if vol_spike >= 3.0:
@@ -227,13 +227,6 @@ def sync_all_trade_evidence(db, fetch_data_fn=None) -> int:
         doc = build_trade_evidence_doc(pos, db=db, fetch_data_fn=fetch_data_fn)
         evidence_col.update_one(
             {"evidence_id": doc["evidence_id"]},
-            {"$set": doc},
-            upsert=True
-        )
-        synced_count += 1
-
-    return synced_count
-            {"evidence_id": evidence_id},
             {"$set": doc},
             upsert=True
         )

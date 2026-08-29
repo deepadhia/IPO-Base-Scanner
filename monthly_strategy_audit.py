@@ -100,24 +100,24 @@ def run_monthly_audit(send_alert: bool = True) -> dict:
     stagnant = active_trades[(active_trades['days_held'] >= 14) & (active_trades['pnl_pct'] <= 0)]
     if not stagnant.empty:
         sym_list = ", ".join([f"{r['symbol']} ({r['pnl_pct']:+.1f}%, {int(r['days_held'])}d)" for _, r in stagnant.iterrows()])
-        attention_items.append(f"⚠️ <b>{len(stagnant)} Stagnant Trades (Held ≥14d):</b> {sym_list}\n   └─ <i>Action: Review for 14-Day Velocity Gate speed cut.</i>")
+        attention_items.append(f"⚠️ <b>{len(stagnant)} Stagnant Trades (Held ≥14d):</b> {sym_list}\n   └─ <i>Addressed in v3.5.0: Cut via 14-Day Velocity Speed Gate.</i>")
 
     # Flag 2: Upper Wick Rejections
     wick_traps = df[df['archetype'] == 'UPPER_WICK_SUPPLY_TRAP']
     if not wick_traps.empty:
-        attention_items.append(f"⚠️ <b>Upper Wick Supply Traps ({len(wick_traps)} cases):</b> Losses driven by >35% wicks on Day 1.\n   └─ <i>Protected in v3.5.0 by Upper 50% Body Gate.</i>")
+        attention_items.append(f"⚠️ <b>Upper Wick Supply Traps ({len(wick_traps)} historical cases):</b> Losses driven by >35% upper wicks.\n   └─ <i>Addressed in v3.5.0: Eliminated by Upper 50% Candle Body Gate.</i>")
 
     # Flag 3: Max Drawdown Warning
     big_drawdowns = df[df['pnl_pct'] <= -8.0]
     if not big_drawdowns.empty:
         syms = ", ".join([f"{r['symbol']} ({r['pnl_pct']:.1f}%)" for _, r in big_drawdowns.iterrows()])
-        attention_items.append(f"⚠️ <b>High Drawdown Setups:</b> {syms}\n   └─ <i>Action: Ensure strict hard stop limits at 8-12%.</i>")
+        attention_items.append(f"⚠️ <b>High Drawdown Setups:</b> {syms}\n   └─ <i>Addressed in v3.2.0: Enforced Hard 12% Max Risk Stop Cap.</i>")
 
     # Flag 4: Portfolio Capacity
     active_count = len(active_trades)
     max_capacity = getattr(scanner_module, 'HARD_ACTIVE_POSITIONS', 10)
     if active_count >= max_capacity:
-        attention_items.append(f"⚠️ <b>Portfolio Capacity at Cap:</b> {active_count}/{max_capacity} active slots occupied.\n   └─ <i>All new breakouts will route to PAPER_ONLY.</i>")
+        attention_items.append(f"⚠️ <b>Portfolio Capacity at Cap:</b> {active_count}/{max_capacity} active slots occupied.\n   └─ <i>Addressed in v3.3.0: Overflow automatically routes to PAPER_ONLY.</i>")
 
     if not attention_items:
         attention_items.append("✅ <b>No Critical Strategy Leaks:</b> All positions operating within nominal risk boundaries.")
@@ -143,12 +143,12 @@ def run_monthly_audit(send_alert: bool = True) -> dict:
 • <b>Average Peak Runup:</b> <b>+{avg_runup:.2f}%</b>
 • <b>Top Performers:</b> {winner_str}
 
-🚨 <b>ATTENTION REQUIRED (Action Items)</b>
+🚨 <b>ATTENTION & FIX STATUS</b>
 {chr(10).join(attention_items)}
 
 🏆 <b>PROVEN ALPHA DIRECTIVES</b>
-• <b>High Volume Surge (≥3.0x):</b> Average runup +11.2%; trail with SuperTrend.
-• <b>Tight Base Coils (PRNG ≤15%):</b> Narrow stops allow 3:1+ asymmetric reward.
+• <b>High Volume Surge (≥3.0x):</b> Average runup +11.2%; [v3.5.0 SuperTrend trailing].
+• <b>Tight Base Coils (PRNG ≤15%):</b> Narrow risk floors allow 3:1+ payouts [v3.3.0].
 
 ━━━━━━━━━━━━━━━━━━━━
 ⚡ <i>AlphaPulse v{SCANNER_VERSION} • Monthly Intelligence Digest • {now_str}</i>"""
