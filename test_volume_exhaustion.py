@@ -168,7 +168,7 @@ class TestListingDayExclusion(unittest.TestCase):
     def test_listing_day_inclusion_would_falsely_suppress_exit(self):
         """
         Simulate: if listing day (10M) were included in the baseline, the average
-        would be inflated so much that recent 80K looks like 0.008 ratio — still triggers.
+        would be inflated so much that recent 80K looks like 0.008 ratio â€” still triggers.
         The key test: confirm our excluded baseline gives the correct ratio string.
         """
         dates = [pd.Timestamp(ENTRY) + pd.Timedelta(days=i) for i in range(25)]

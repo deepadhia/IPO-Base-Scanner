@@ -1,6 +1,6 @@
 # IPO Breakout Qualification Engine — System Knowledge Map
 
-> **Version:** v3.4.0
+> **Version:** v3.5.0
 > **Last Updated:** 2026-07-21
 > **Purpose:** Permanent reference document. Attach this file to any AI conversation before asking questions or requesting changes to this codebase.
 
@@ -23,7 +23,7 @@ A **behaviour-driven IPO momentum qualification engine** for Indian equities (NS
 ```
 IPO-Base-Scanner/
 │
-├── streamlined_ipo_scanner.py       # MAIN: Consolidation breakout scanner (v3.4.0) — 4,900+ lines
+├── streamlined_ipo_scanner.py       # MAIN: Consolidation breakout scanner (v3.5.0) — 4,900+ lines
 ├── listing_day_breakout_scanner.py  # Listing Day scanner (imports from main scanner) — 2,282 lines
 ├── hourly_breakout_scanner.py       # Intraday watchlist scanner
 ├── run_latest_rules_backtest.py     # Production rules backtesting engine & strategy audit

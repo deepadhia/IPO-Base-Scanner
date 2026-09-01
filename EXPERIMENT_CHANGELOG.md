@@ -4,7 +4,7 @@ This file tracks analysis and logging cutovers so experiment windows stay compar
 
 ## Current Active Baseline
 
-- `scanner_version`: `3.4.0`
+- `scanner_version`: `3.5.0`
 - `log_schema_version`: `2026-04-23.v1`
 - recommended clean analysis start: `2026-07-05` (param tightening: CONSOL_WINDOWS=10,20, MIN_LIVE_GRADE=B)
 

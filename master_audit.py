@@ -38,7 +38,7 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 # Keep this in sync with streamlined_ipo_scanner.py SCANNER_VERSION.
 # Section 3 will flag any drift automatically.
-EXPECTED_VERSION = "3.4.0"
+EXPECTED_VERSION = "3.5.0"
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -430,6 +430,12 @@ def audit_strategy_consistency(db):
         "streamlined_ipo_scanner.py": extract_ver(
             os.path.join(base_dir, "streamlined_ipo_scanner.py"),
             r'SCANNER_VERSION\s*=\s*["\']([^"\']+)["\']'),
+        "listing_day_breakout_scanner.py": extract_ver(
+            os.path.join(base_dir, "listing_day_breakout_scanner.py"),
+            r'SCANNER_VERSION\s*=\s*["\']([^"\']+)["\']'),
+        "hourly_breakout_scanner.py": extract_ver(
+            os.path.join(base_dir, "hourly_breakout_scanner.py"),
+            r'SCANNER_VERSION\s*=\s*["\']([^"\']+)["\']'),
         "db.py": extract_ver(
             os.path.join(base_dir, "db.py"),
             r'SCANNER_VERSION\s*=\s*["\']([^"\']+)["\']'),
@@ -438,7 +444,7 @@ def audit_strategy_consistency(db):
             r'badge/version-([0-9.]+)-orange'),
         "README footer": extract_ver(
             os.path.join(base_dir, "README.md"),
-            r'systematic IPO momentum trading \| v([0-9]+\.[0-9]+\.[0-9]+) \|'),
+            r'systematic (?:IPO )?momentum trading \| (?:AlphaPulse )?v([0-9]+\.[0-9]+\.[0-9]+) \|'),
     }
 
     drift = [(name, ver) for name, ver in versions.items()
@@ -448,7 +454,7 @@ def audit_strategy_consistency(db):
             r.error("Version drift: %s has '%s', expected '%s'." % (
                 name, ver, EXPECTED_VERSION))
     else:
-        r.ok("All version strings match '%s' across scanner, db.py, and README." % EXPECTED_VERSION)
+        r.ok("All version strings match '%s' across scanners, db.py, and README." % EXPECTED_VERSION)
 
     # 3b. V2 signals with missing sector
     missing_sector = db.signals_v2.count_documents({
